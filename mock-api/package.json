@@ -2,11 +2,9 @@
   "name": "mock-api",
   "version": "1.0.0",
   "scripts": {
-    "start": "node server.js",
-    "mock": "prism mock grupo-5-order-service-contract-def.yaml -h 0.0.0.0 -p $PORT --multiprocess false"
+    "start": "node src/index.js"
   },
   "dependencies": {
-    "@stoplight/prism-cli": "^5.14.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
