@@ -1,0 +1,10 @@
+{
+  "name": "mock-api",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "prism mock -h 0.0.0.0 grupo-5-order-service-contract-def.yaml"
+  },
+  "dependencies": {
+    "@stoplight/prism-cli": "^5.14.0"
+  }
+}
