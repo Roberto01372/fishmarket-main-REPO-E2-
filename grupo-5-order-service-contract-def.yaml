@@ -1,0 +1,540 @@
+openapi: 3.0.3
+info:
+  title: Order Service API
+  description: |
+    Servicio central del ecosistema Mini Marketplace Cloud.
+    Gestiona el ciclo de vida completo de un pedido desde su creación
+    hasta su entrega o cancelación.
+    
+    Grupo 5 — Pedidos / Order Management
+  version: "1.0"
+  contact:
+    name: Grupo 5
+
+servers:
+  - url: https://order-service.onrender.com
+    description: Producción (cloud free)
+  - url: http://localhost:3000
+    description: Desarrollo local
+
+# ─────────────────────────────────────────────
+# HEADERS OBLIGATORIOS EN TODOS LOS REQUESTS
+# ─────────────────────────────────────────────
+# X-Request-Id:    uuid generado por el cliente
+# X-Correlation-Id: uuid para trazabilidad entre servicios
+# X-Consumer:      nombre del grupo que consume (ej: cart-service)
+# Idempotency-Key: uuid para prevenir duplicados en POST
+
+paths:
+
+  # ─────────────────────────
+  # POST /orders
+  # ─────────────────────────
+  /orders:
+    post:
+      summary: Crear un nuevo pedido
+      description: |
+        Crea un pedido a partir del checkout del carro de compras.
+        Implementa idempotencia mediante el header Idempotency-Key.
+        Si se recibe la misma clave dos veces, retorna el pedido ya creado
+        sin crear uno duplicado.
+        
+        Luego de crear el pedido, publica el evento OrderCreated.
+      operationId: createOrder
+      tags: [Orders]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/Consumer'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+            example:
+              userId: "USR-01"
+              items:
+                - productId: "P-100"
+                  quantity: 2
+                  unitPrice: 14990
+                - productId: "P-205"
+                  quantity: 1
+                  unitPrice: 19990
+      responses:
+        '201':
+          description: Pedido creado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderResponse'
+              example:
+                orderId: "ORD-1001"
+                userId: "USR-01"
+                status: "CREATED"
+                totalAmount: 49970
+                items:
+                  - productId: "P-100"
+                    quantity: 2
+                    unitPrice: 14990
+                    subtotal: 29980
+                  - productId: "P-205"
+                    quantity: 1
+                    unitPrice: 19990
+                    subtotal: 19990
+                createdAt: "2026-05-25T10:00:00Z"
+                updatedAt: "2026-05-25T10:00:00Z"
+        '400':
+          description: |
+            Request inválido. Incluye el caso de header Idempotency-Key
+            ausente, ya que es obligatorio para este endpoint.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingUserId:
+                  summary: Falta el campo userId
+                  value:
+                    timestamp: "2026-05-25T10:00:00Z"
+                    status: 400
+                    code: "INVALID_REQUEST"
+                    message: "El campo userId es requerido"
+                    correlationId: "abc-123"
+                missingIdempotencyKey:
+                  summary: Falta el header Idempotency-Key
+                  value:
+                    timestamp: "2026-05-25T10:00:00Z"
+                    status: 400
+                    code: "MISSING_IDEMPOTENCY_KEY"
+                    message: "El header Idempotency-Key es obligatorio para crear un pedido"
+                    correlationId: "abc-123"
+        '409':
+          description: Pedido duplicado (misma Idempotency-Key)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                timestamp: "2026-05-25T10:00:00Z"
+                status: 409
+                code: "DUPLICATED_ORDER"
+                message: "The request was already processed"
+                correlationId: "abc-123"
+        '422':
+          description: Sin stock disponible
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                timestamp: "2026-05-25T10:00:00Z"
+                status: 422
+                code: "OUT_OF_STOCK"
+                message: "El producto P-100 no tiene stock suficiente"
+                correlationId: "abc-123"
+
+    get:
+      summary: Listar pedidos de un usuario (paginado)
+      description: Retorna lista paginada de pedidos filtrada por userId.
+      operationId: listOrders
+      tags: [Orders]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: userId
+          in: query
+          required: true
+          schema:
+            type: string
+          example: "USR-01"
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+          example: 1
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 10
+            minimum: 1
+            maximum: 50
+          example: 10
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/OrderStatus'
+          description: Filtrar por estado (opcional)
+      responses:
+        '200':
+          description: Lista paginada de pedidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedOrders'
+              example:
+                data:
+                  - orderId: "ORD-1001"
+                    userId: "USR-01"
+                    status: "DELIVERED"
+                    totalAmount: 49970
+                    createdAt: "2026-05-25T10:00:00Z"
+                  - orderId: "ORD-1002"
+                    userId: "USR-01"
+                    status: "PAID"
+                    totalAmount: 29990
+                    createdAt: "2026-05-26T14:30:00Z"
+                pagination:
+                  page: 1
+                  size: 10
+                  total: 2
+                  totalPages: 1
+
+  # ─────────────────────────
+  # GET /orders/{id}
+  # ─────────────────────────
+  /orders/{id}:
+    get:
+      summary: Obtener un pedido por ID
+      operationId: getOrderById
+      tags: [Orders]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "ORD-1001"
+      responses:
+        '200':
+          description: Pedido encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderResponse'
+        '404':
+          description: Pedido no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                timestamp: "2026-05-25T10:00:00Z"
+                status: 404
+                code: "ORDER_NOT_FOUND"
+                message: "No existe el pedido ORD-9999"
+                correlationId: "abc-123"
+
+    patch:
+      summary: Actualizar estado de un pedido
+      description: |
+        Cambia el estado del pedido. Solo se permiten transiciones válidas:
+        
+        CREATED → STOCK_RESERVED | CANCELLED | FAILED
+        STOCK_RESERVED → PAYMENT_PENDING
+        PAYMENT_PENDING → PAID | CANCELLED | FAILED
+        PAID → READY_TO_SHIP
+        READY_TO_SHIP → SHIPPED
+        SHIPPED → DELIVERED | FAILED
+        
+        Nota de diseño: el stock se reserva ANTES de iniciar el cobro.
+        Esto evita que dos usuarios paguen por la última unidad de un
+        producto y solo a uno de ellos le llegue el pedido. Si la reserva
+        de stock falla (CREATED → CANCELLED/FAILED), el pedido nunca
+        llega a estado de pago.
+      operationId: updateOrderStatus
+      tags: [Orders]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "ORD-1001"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateStatusRequest'
+            example:
+              status: "STOCK_RESERVED"
+              reason: "StockReserved event received"
+      responses:
+        '200':
+          description: Estado actualizado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderResponse'
+        '400':
+          description: Transición de estado inválida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                timestamp: "2026-05-25T10:00:00Z"
+                status: 400
+                code: "INVALID_STATUS_TRANSITION"
+                message: "No se puede pasar de CREATED a PAID directamente; primero debe reservarse el stock"
+                correlationId: "abc-123"
+        '404':
+          description: Pedido no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: |
+            Sin stock disponible. Ocurre cuando se intenta la transición
+            CREATED → STOCK_RESERVED y el servicio de Inventario (Grupo 7)
+            rechaza la reserva por falta de stock. El pedido pasa
+            automáticamente a CANCELLED o FAILED, nunca llega a generar
+            un cobro.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                timestamp: "2026-05-25T10:00:00Z"
+                status: 422
+                code: "OUT_OF_STOCK"
+                message: "El producto P-100 no tiene stock suficiente; el pedido fue cancelado antes de procesar el pago"
+                correlationId: "abc-123"
+
+# ─────────────────────────────────────────────
+# COMPONENTES REUTILIZABLES
+# ─────────────────────────────────────────────
+components:
+
+  parameters:
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+      example: "550e8400-e29b-41d4-a716-446655440000"
+
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+      example: "660e8400-e29b-41d4-a716-446655440111"
+
+    Consumer:
+      name: X-Consumer
+      in: header
+      required: false
+      schema:
+        type: string
+      example: "cart-service"
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        UUID obligatorio para evitar pedidos duplicados en POST /orders.
+        La idempotencia del endpoint depende exclusivamente de este header;
+        sin él, no es posible garantizar que un doble envío del request
+        no genere dos pedidos.
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+
+    OrderStatus:
+      type: string
+      enum:
+        - CREATED
+        - PAYMENT_PENDING
+        - PAID
+        - STOCK_RESERVED
+        - READY_TO_SHIP
+        - SHIPPED
+        - DELIVERED
+        - CANCELLED
+        - FAILED
+
+    OrderItem:
+      type: object
+      required: [productId, quantity, unitPrice]
+      properties:
+        productId:
+          type: string
+          example: "P-100"
+        quantity:
+          type: integer
+          minimum: 1
+          example: 2
+        unitPrice:
+          type: number
+          format: float
+          example: 14990
+        subtotal:
+          type: number
+          format: float
+          readOnly: true
+          example: 29980
+
+    CreateOrderRequest:
+      type: object
+      required: [userId, items]
+      description: |
+        La idempotencia se controla mediante el header Idempotency-Key
+        (ver parámetro IdempotencyKey), no mediante un campo del body.
+      properties:
+        userId:
+          type: string
+          example: "USR-01"
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/OrderItem'
+
+    UpdateStatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        reason:
+          type: string
+          description: Motivo del cambio de estado (opcional, para auditoría)
+          example: "StockReserved event received"
+
+    OrderResponse:
+      type: object
+      properties:
+        orderId:
+          type: string
+          example: "ORD-1001"
+        userId:
+          type: string
+          example: "USR-01"
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        totalAmount:
+          type: number
+          format: float
+          example: 49970
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderItem'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    PaginatedOrders:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderResponse'
+        pagination:
+          type: object
+          properties:
+            page:
+              type: integer
+            size:
+              type: integer
+            total:
+              type: integer
+            totalPages:
+              type: integer
+
+    ErrorResponse:
+      type: object
+      required: [timestamp, status, code, message, correlationId]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        code:
+          type: string
+        message:
+          type: string
+        correlationId:
+          type: string
+
+# ─────────────────────────────────────────────
+# EVENTOS (documentación, no parte de OpenAPI)
+# ─────────────────────────────────────────────
+# PUBLICA:
+#   OrderCreated → cuando POST /orders es exitoso
+#
+# CONSUME (orden del flujo: stock se reserva ANTES de cobrar):
+#   StockReserved    → cambia estado de CREATED a STOCK_RESERVED
+#   StockRejected    → cambia estado de CREATED a CANCELLED/FAILED
+#                      (el pedido nunca llega a generar un cobro)
+#   PaymentApproved  → cambia estado de PAYMENT_PENDING a PAID
+#   PaymentRejected  → cambia estado de PAYMENT_PENDING a CANCELLED
+# ─────────────────────────────────────────────
+# EVENTOS (documentación, no parte de OpenAPI)
+# ─────────────────────────────────────────────
+# PUBLICA:
+#   OrderCreated      → cuando POST /orders es exitoso
+#   OrderReadyToShip  → cuando el pedido cambia a READY_TO_SHIP
+#
+# CONSUME (orden del flujo: stock se reserva ANTES de cobrar):
+#   StockReserved    → cambia estado de CREATED a STOCK_RESERVED
+#   StockRejected    → cambia estado de CREATED a CANCELLED/FAILED
+#                      (el pedido nunca llega a generar un cobro)
+#   PaymentApproved  → cambia estado de PAYMENT_PENDING a PAID
+#   PaymentRejected  → cambia estado de PAYMENT_PENDING a CANCELLED
+#   ShipmentCreated   → cambia estado de READY_TO_SHIP a SHIPPED
+#   ShipmentDelivered → cambia estado de SHIPPED a DELIVERED
+#
+# Evento OrderReadyToShip:
+# {
+#   "eventId": "uuid",
+#   "eventType": "OrderReadyToShip",
+#   "version": "1.0",
+#   "occurredAt": "2026-05-25T10:30:00Z",
+#   "producer": "order-service",
+#   "correlationId": "abc-123",
+#   "payload": {
+#     "orderId": "ORD-1001",
+#     "userId": "USR-01",
+#     "totalAmount": 49970
+#   }
+# }
+#
+# Formato estándar de evento:
+# {
+#   "eventId":       "uuid",
+#   "eventType":     "OrderCreated",
+#   "version":       "1.0",
+#   "occurredAt":    "2026-05-25T10:00:00Z",
+#   "producer":      "order-service",
+#   "correlationId": "abc-123",
+#   "payload": {
+#     "orderId":     "ORD-1001",
+#     "userId":      "USR-01",
+#     "totalAmount": 49970
+#   }
+# }
