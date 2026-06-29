@@ -1,0 +1,5 @@
+De manera local
+  prism mock -h 0.0.0.0 grupo-5-order-service-contract-def.yaml 
+
+En Render
+  prism mock grupo-5-order-service-contract-def.yaml -h 0.0.0.0 -p $PORT --multiprocess false
