@@ -131,8 +131,17 @@ async function getAllPublicTables() {
   }
 }
 
+const orders = [];
+
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', database: pool ? 'configured' : 'not-configured' });
+  res.json({ status: 'ok', database: pool ? 'configured' : 'not-configured', orders: orders.length });
+});
+
+app.get('/orders', (_req, res) => {
+  res.json({
+    message: 'Use POST /orders to create a new order. GET returns this help message.',
+    totalOrders: orders.length,
+  });
 });
 
 app.post('/orders', async (req, res) => {
