@@ -29,11 +29,11 @@ const normalizeConnectionString = (connectionString) => {
 };
 
 const dbUrl = process.env.DATABASE_URL ? normalizeConnectionString(process.env.DATABASE_URL) : undefined;
-const pool = dbUrl ? new Pool({ connectionString: dbUrl }) : null;
+const pool = dbUrl ? new Pool({ connectionString: dbUrl, ssl: { rejectUnauthorized: false } }) : null;
 let dbAvailable = false;
 let dbErrorMessage = null;
 
-const quoteIdentifier = (value) => `"${String(value).replace(/"/g, '""') }"`;
+const quoteIdentifier = (value) => `"${String(value).replace(/"/g, '""')}"`;
 
 if (pool) {
   pool.query('SELECT 1')
@@ -48,94 +48,36 @@ if (pool) {
 }
 
 async function findProductStock(productId) {
-  if (!pool) {
+  if (!pool || !productId) {
     return null;
   }
 
-  const candidateTables = [
-    process.env.PRODUCTS_TABLE,
-    'products',
-    'inventory',
-    'product_inventory',
-    'product',
-    'items',
-    'catalog_products',
-    'stocks',
-    'product_stocks',
-  ].filter(Boolean);
+  const productTable = process.env.PRODUCTS_TABLE ?? 'products';
+  const idColumn = process.env.PRODUCTS_ID_COLUMN ?? 'id';
+  const stockColumn = process.env.STOCK_COLUMN ?? 'stock';
 
-  const candidateIdColumns = [
-    process.env.PRODUCTS_ID_COLUMN,
-    'id',
-    'product_id',
-    'productId',
-    'sku',
-    'code',
-    'slug',
-  ].filter(Boolean);
+  try {
+    const { rows } = await pool.query(
+      `SELECT ${quoteIdentifier(idColumn)} AS product_id, ${quoteIdentifier(stockColumn)} AS stock FROM ${quoteIdentifier(productTable)} WHERE ${quoteIdentifier(idColumn)} = $1 LIMIT 1`,
+      [productId],
+    );
 
-  const candidateStockColumns = [
-    process.env.STOCK_COLUMN,
-    'stock',
-    'quantity',
-    'stock_quantity',
-    'available_quantity',
-    'quantity_available',
-    'inventory',
-    'units_in_stock',
-    'available_stock',
-  ].filter(Boolean);
-
-  const normalizedProductId = String(productId || '').trim();
-  const productVariants = [
-    normalizedProductId,
-    normalizedProductId.replace(/^P-|^PROD-|^PRODUCT-/i, ''),
-    normalizedProductId.replace(/[^0-9]/g, ''),
-    normalizedProductId.replace(/^0+/, ''),
-  ].filter(Boolean);
-
-  const allTables = [...new Set([...(candidateTables || []), ...(await getAllPublicTables())])];
-
-  for (const table of allTables) {
-    try {
-      const { rows: columnsRows } = await pool.query(
-        `SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1`,
-        [table],
-      );
-      const columns = columnsRows.map((row) => row.column_name);
-
-      const idColumn = candidateIdColumns.find((column) => columns.includes(column)) || columns.find((column) => ['id', 'product_id', 'productId', 'sku', 'code', 'slug'].includes(column));
-      const stockColumn = candidateStockColumns.find((column) => columns.includes(column)) || columns.find((column) => ['stock', 'quantity', 'stock_quantity', 'available_quantity', 'quantity_available', 'inventory', 'units_in_stock', 'available_stock'].includes(column));
-
-      if (!idColumn || !stockColumn) {
-        continue;
-      }
-
-      const whereClause = productVariants
-        .map((_, index) => `${quoteIdentifier(idColumn)}::text = $${index + 1}`)
-        .join(' OR ');
-
-          const { rows } = await pool.query(
-        `SELECT ${quoteIdentifier(idColumn)} AS product_id, ${quoteIdentifier(stockColumn)} AS stock FROM ${quoteIdentifier(table)} WHERE ${whereClause} LIMIT 1`,
-        productVariants,
-      );
-
-      if (rows.length > 0) {
-        return {
-          table,
-          productId: rows[0].product_id,
-          stock: Number(rows[0].stock) || 0,
-          foundOnTable: table,
-          idColumn,
-          stockColumn,
-        };
-      }
-    } catch (error) {
-      continue;
+    if (rows.length > 0) {
+      return {
+        table: productTable,
+        productId: rows[0].product_id,
+        stock: Number(rows[0].stock) || 0,
+        foundOnTable: productTable,
+        idColumn,
+        stockColumn,
+      };
     }
-  }
 
-  return null;
+    return null;
+  } catch (error) {
+    console.error('findProductStock error:', error.message);
+    return null;
+  }
 }
 
 async function getAllPublicTables() {
@@ -150,7 +92,17 @@ async function getAllPublicTables() {
 const orders = [];
 
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', database: pool ? 'configured' : 'not-configured', orders: orders.length });
+  res.json({ status: 'ok', database: pool ? 'configured' : 'not-configured', dbAvailable, dbErrorMessage, orders: orders.length });
+});
+
+app.get('/debug/product/:id', async (req, res) => {
+  if (!pool) {
+    return res.status(500).json({ error: 'DB pool not configured', dbErrorMessage });
+  }
+
+  const productId = req.params.id;
+  const result = await findProductStock(productId);
+  return res.json({ productId, result, dbAvailable, dbErrorMessage });
 });
 
 app.get('/orders', (_req, res) => {
