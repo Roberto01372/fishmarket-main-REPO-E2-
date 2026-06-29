@@ -28,11 +28,24 @@ const normalizeConnectionString = (connectionString) => {
     : `${connectionString}?sslmode=require`;
 };
 
-const pool = process.env.DATABASE_URL
-  ? new Pool({ connectionString: normalizeConnectionString(process.env.DATABASE_URL) })
-  : null;
+const dbUrl = process.env.DATABASE_URL ? normalizeConnectionString(process.env.DATABASE_URL) : undefined;
+const pool = dbUrl ? new Pool({ connectionString: dbUrl }) : null;
+let dbAvailable = false;
+let dbErrorMessage = null;
 
-const quoteIdentifier = (value) => `"${String(value).replace(/"/g, '""')}"`;
+const quoteIdentifier = (value) => `"${String(value).replace(/"/g, '""') }"`;
+
+if (pool) {
+  pool.query('SELECT 1')
+    .then(() => {
+      dbAvailable = true;
+      console.log('Postgres connection OK');
+    })
+    .catch((error) => {
+      dbErrorMessage = error.message;
+      console.error('Postgres connection failed:', dbErrorMessage);
+    });
+}
 
 async function findProductStock(productId) {
   if (!pool) {
@@ -102,7 +115,7 @@ async function findProductStock(productId) {
         .map((_, index) => `${quoteIdentifier(idColumn)}::text = $${index + 1}`)
         .join(' OR ');
 
-      const { rows } = await pool.query(
+          const { rows } = await pool.query(
         `SELECT ${quoteIdentifier(idColumn)} AS product_id, ${quoteIdentifier(stockColumn)} AS stock FROM ${quoteIdentifier(table)} WHERE ${whereClause} LIMIT 1`,
         productVariants,
       );
@@ -112,6 +125,9 @@ async function findProductStock(productId) {
           table,
           productId: rows[0].product_id,
           stock: Number(rows[0].stock) || 0,
+          foundOnTable: table,
+          idColumn,
+          stockColumn,
         };
       }
     } catch (error) {
@@ -139,9 +155,19 @@ app.get('/health', (_req, res) => {
 
 app.get('/orders', (_req, res) => {
   res.json({
-    message: 'Use POST /orders to create a new order. GET returns this help message.',
+    message: 'Use POST /orders to create a new order; GET /orders only returns metadata.',
     totalOrders: orders.length,
+    dbAvailable,
+    dbErrorMessage,
   });
+});
+
+app.get('/orders/:id', (req, res) => {
+  const order = orders.find((o) => o.orderId === req.params.id);
+  if (!order) {
+    return res.status(404).json({ message: 'Order not found' });
+  }
+  return res.json(order);
 });
 
 app.post('/orders', async (req, res) => {
@@ -185,12 +211,22 @@ app.post('/orders', async (req, res) => {
     }
 
     const stockInfo = await findProductStock(productId);
-    if (!stockInfo || stockInfo.stock < quantity) {
+    if (!stockInfo) {
+      return res.status(422).json({
+        timestamp: new Date().toISOString(),
+        status: 422,
+        code: 'PRODUCT_NOT_FOUND',
+        message: `No se encontró el producto ${productId} en la base de datos`,
+        correlationId: req.headers['x-correlation-id'] || 'local',
+      });
+    }
+
+    if (stockInfo.stock < quantity) {
       return res.status(422).json({
         timestamp: new Date().toISOString(),
         status: 422,
         code: 'OUT_OF_STOCK',
-        message: `El producto ${productId} no tiene stock suficiente`,
+        message: `El producto ${productId} tiene stock ${stockInfo.stock} y se pidió ${quantity}`,
         correlationId: req.headers['x-correlation-id'] || 'local',
       });
     }
@@ -204,8 +240,7 @@ app.post('/orders', async (req, res) => {
   }
 
   const totalAmount = orderItems.reduce((sum, item) => sum + item.subtotal, 0);
-
-  return res.status(201).json({
+  const order = {
     orderId: `ORD-${Date.now()}`,
     userId,
     status: 'CREATED',
@@ -213,7 +248,11 @@ app.post('/orders', async (req, res) => {
     items: orderItems,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-  });
+  };
+
+  orders.push(order);
+
+  return res.status(201).json(order);
 });
 
 app.listen(port, () => {
