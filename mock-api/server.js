@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const dns = require('dns');
 const path = require('path');
 const dotenv = require('dotenv');
 const { Pool } = require('pg');
@@ -30,11 +31,20 @@ const normalizeConnectionString = (connectionString) => {
 
 const dbUrl = process.env.DATABASE_URL ? normalizeConnectionString(process.env.DATABASE_URL) : undefined;
 
-const parseDatabaseUrl = (connectionString) => {
+const resolveHostIPv4 = (hostname) => {
+  return new Promise((resolve) => {
+    dns.lookup(hostname, { family: 4 }, (err, address) => {
+      resolve(err ? null : address);
+    });
+  });
+};
+
+const parseDatabaseUrl = async (connectionString) => {
   try {
     const url = new URL(connectionString);
+    const ipv4 = await resolveHostIPv4(url.hostname);
     return {
-      host: url.hostname,
+      host: ipv4 || url.hostname,
       port: Number(url.port || 5432),
       user: decodeURIComponent(url.username),
       password: decodeURIComponent(url.password),
@@ -48,10 +58,29 @@ const parseDatabaseUrl = (connectionString) => {
   }
 };
 
-const poolConfig = dbUrl ? parseDatabaseUrl(dbUrl) : null;
-const pool = poolConfig ? new Pool(poolConfig) : null;
+let poolConfig = null;
+let pool = null;
 let dbAvailable = false;
 let dbErrorMessage = null;
+
+(async () => {
+  if (dbUrl) {
+    poolConfig = await parseDatabaseUrl(dbUrl);
+    if (poolConfig) {
+      pool = new Pool(poolConfig);
+
+      pool.query('SELECT 1')
+        .then(() => {
+          dbAvailable = true;
+          console.log('Postgres connection OK');
+        })
+        .catch((error) => {
+          dbErrorMessage = error.message;
+          console.error('Postgres connection failed:', dbErrorMessage);
+        });
+    }
+  }
+})();
 
 const quoteIdentifier = (value) => `"${String(value).replace(/"/g, '""')}"`;
 
