@@ -29,7 +29,27 @@ const normalizeConnectionString = (connectionString) => {
 };
 
 const dbUrl = process.env.DATABASE_URL ? normalizeConnectionString(process.env.DATABASE_URL) : undefined;
-const pool = dbUrl ? new Pool({ connectionString: dbUrl, ssl: { rejectUnauthorized: false } }) : null;
+
+const parseDatabaseUrl = (connectionString) => {
+  try {
+    const url = new URL(connectionString);
+    return {
+      host: url.hostname,
+      port: Number(url.port || 5432),
+      user: decodeURIComponent(url.username),
+      password: decodeURIComponent(url.password),
+      database: url.pathname?.slice(1),
+      ssl: { rejectUnauthorized: false },
+      family: 4,
+    };
+  } catch (error) {
+    console.error('Failed to parse DATABASE_URL:', error.message);
+    return null;
+  }
+};
+
+const poolConfig = dbUrl ? parseDatabaseUrl(dbUrl) : null;
+const pool = poolConfig ? new Pool(poolConfig) : null;
 let dbAvailable = false;
 let dbErrorMessage = null;
 
