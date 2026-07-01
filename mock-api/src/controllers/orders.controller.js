@@ -39,7 +39,8 @@ const createOrder = async (req, res, next) => {
     let totalAmount = 0;
 
     for (const item of items) {
-      const productId = item?.productId;
+      const rawProductId = item?.productId;
+      const productId = typeof rawProductId === "string" ? rawProductId.trim() : rawProductId;
       const quantity = Number(item?.quantity);
       const unitPrice = Number(item?.unitPrice || 0);
 
