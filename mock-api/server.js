@@ -63,26 +63,8 @@ let pool = null;
 let dbAvailable = false;
 let dbErrorMessage = null;
 
-(async () => {
-  if (dbUrl) {
-    poolConfig = await parseDatabaseUrl(dbUrl);
-    if (poolConfig) {
-      pool = new Pool(poolConfig);
-
-      pool.query('SELECT 1')
-        .then(() => {
-          dbAvailable = true;
-          console.log('Postgres connection OK');
-        })
-        .catch((error) => {
-          dbErrorMessage = error.message;
-          console.error('Postgres connection failed:', dbErrorMessage);
-        });
-    }
-  }
-})();
-
 const quoteIdentifier = (value) => `"${String(value).replace(/"/g, '""')}"`;
+const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // ==========================================
 // FUNCIONES AUXILIARES DE NEGOCIO
@@ -362,6 +344,33 @@ app.patch('/orders/:id', async (req, res) => {
   }
 });
 
-app.listen(port, () => {
-  console.log(`Order service listening on port ${port}`);
-});
+// ==========================================
+// ARRANQUE SEGURO Y SINCRONIZADO (REEMPLAZA AL APP.LISTEN VIEJO)
+// ==========================================
+const startServer = async () => {
+  if (dbUrl) {
+    poolConfig = await parseDatabaseUrl(dbUrl);
+    if (poolConfig) {
+      pool = new Pool(poolConfig);
+      try {
+        // Forzamos a esperar a Supabase antes de abrir el puerto
+        await pool.query('SELECT 1');
+        dbAvailable = true;
+        console.log('✅ Postgres connection OK con Supabase');
+      } catch (error) {
+        dbErrorMessage = error.message;
+        console.error('❌ Postgres connection failed:', dbErrorMessage);
+      }
+    }
+  } else {
+    console.error('❌ No se detectó la variable DATABASE_URL');
+  }
+
+  // Tu app.listen original ahora vive protegido aquí adentro:
+  app.listen(port, () => {
+    console.log(`🚀 Order service listening on port ${port}`);
+  });
+};
+
+// Ejecutamos la función para iniciar todo en el orden correcto
+startServer();
