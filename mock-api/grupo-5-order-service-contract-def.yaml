@@ -59,7 +59,7 @@ paths:
                 - productId: "P-100"
                   quantity: 2
                   unitPrice: 14990
-                - productId: "P-205"
+                - productId: "P-001"
                   quantity: 1
                   unitPrice: 19990
       responses:
@@ -79,7 +79,7 @@ paths:
                     quantity: 2
                     unitPrice: 14990
                     subtotal: 29980
-                  - productId: "P-205"
+                  - productId: "P-001"
                     quantity: 1
                     unitPrice: 19990
                     subtotal: 19990
