@@ -12,7 +12,7 @@ info:
     name: Grupo 5
 
 servers:
-  - url: https://order-service.onrender.com
+  - url: https://pedidos-g5.onrender.com
     description: Producción (cloud free)
   - url: http://localhost:3000
     description: Desarrollo local
