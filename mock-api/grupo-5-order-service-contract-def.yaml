@@ -134,6 +134,8 @@ paths:
                 code: "OUT_OF_STOCK"
                 message: "El producto P-100 no tiene stock suficiente"
                 correlationId: "abc-123"
+        '500':
+          $ref: '#/components/responses/ServerError'
 
     get:
       summary: Listar pedidos de un usuario (paginado)
@@ -194,6 +196,8 @@ paths:
                   size: 10
                   total: 2
                   totalPages: 1
+        '500':
+          $ref: '#/components/responses/ServerError'
 
   # ─────────────────────────
   # GET /orders/{id}
@@ -231,6 +235,8 @@ paths:
                 code: "ORDER_NOT_FOUND"
                 message: "No existe el pedido ORD-9999"
                 correlationId: "abc-123"
+      '500':
+          $ref: '#/components/responses/ServerError'
 
     patch:
       summary: Actualizar estado de un pedido
@@ -311,6 +317,8 @@ paths:
                 code: "OUT_OF_STOCK"
                 message: "El producto P-100 no tiene stock suficiente; el pedido fue cancelado antes de procesar el pago"
                 correlationId: "abc-123"
+        '500':
+          $ref: '#/components/responses/ServerError'
 
 # ─────────────────────────────────────────────
 # COMPONENTES REUTILIZABLES
@@ -481,18 +489,25 @@ components:
         correlationId:
           type: string
 
-# ─────────────────────────────────────────────
-# EVENTOS (documentación, no parte de OpenAPI)
-# ─────────────────────────────────────────────
-# PUBLICA:
-#   OrderCreated → cuando POST /orders es exitoso
-#
-# CONSUME (orden del flujo: stock se reserva ANTES de cobrar):
-#   StockReserved    → cambia estado de CREATED a STOCK_RESERVED
-#   StockRejected    → cambia estado de CREATED a CANCELLED/FAILED
-#                      (el pedido nunca llega a generar un cobro)
-#   PaymentApproved  → cambia estado de PAYMENT_PENDING a PAID
-#   PaymentRejected  → cambia estado de PAYMENT_PENDING a CANCELLED
+    responses:
+    ServerError:
+      description: |
+        El servidor no responde o falló de forma inesperada (por ejemplo,
+        pérdida de conexión con la base de datos o error no controlado).
+        El cliente puede reintentar el request más adelante; si el request
+        original fue un POST /orders con Idempotency-Key, el reintento con
+        la misma clave es seguro y no generará un pedido duplicado.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            timestamp: "2026-05-25T10:00:00Z"
+            status: 500
+            code: "INTERNAL_SERVER_ERROR"
+            message: "El servidor no responde. Intente nuevamente más tarde."
+            correlationId: "abc-123"
+
 # ─────────────────────────────────────────────
 # EVENTOS (documentación, no parte de OpenAPI)
 # ─────────────────────────────────────────────
