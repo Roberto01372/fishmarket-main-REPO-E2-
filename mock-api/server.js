@@ -8,9 +8,7 @@ const path = require('path');
 const dotenv = require('dotenv');
 const { Pool } = require('pg');
 
-dotenv.config();
-dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
-dotenv.config({ path: path.resolve(__dirname, '..', '.env.example') });
+dotenv.config(); // solo para desarrollo local
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
