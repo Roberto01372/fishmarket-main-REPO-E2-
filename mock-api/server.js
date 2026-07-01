@@ -99,8 +99,6 @@ async function findProductStock(productId) {
   }
 }
 
-// Validación de formato UUID para endpoints de consulta
-const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // ==========================================
 // ENDPOINT: HEALTH CHECK
