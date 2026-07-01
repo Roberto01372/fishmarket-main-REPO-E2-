@@ -197,7 +197,7 @@ app.post('/orders', async (req, res) => {
 
   const orderItems = [];
   for (const item of items) {
-    const productId = item.productId;
+    const productId = String(item.productId).trim();
     const quantity = Number(item.quantity || 0);
     const unitPrice = Number(item.unitPrice || 0);
 
