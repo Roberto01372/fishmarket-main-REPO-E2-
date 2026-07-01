@@ -352,19 +352,19 @@ const startServer = async () => {
         // Forzamos a esperar a Supabase antes de abrir el puerto
         await pool.query('SELECT 1');
         dbAvailable = true;
-        console.log('✅ Postgres connection OK con Supabase');
+        console.log('Postgres connection OK con Supabase');
       } catch (error) {
         dbErrorMessage = error.message;
-        console.error('❌ Postgres connection failed:', dbErrorMessage);
+        console.error('Postgres connection failed:', dbErrorMessage);
       }
     }
   } else {
-    console.error('❌ No se detectó la variable DATABASE_URL');
+    console.error('No se detectó la variable DATABASE_URL');
   }
 
   // Tu app.listen original ahora vive protegido aquí adentro:
   app.listen(port, () => {
-    console.log(`🚀 Order service listening on port ${port}`);
+    console.log(`Order service listening on port ${port}`);
   });
 };
 
