@@ -7,7 +7,7 @@ const dns = require('dns');
 const path = require('path');
 const dotenv = require('dotenv');
 const { Pool } = require('pg');
-const axios = requires('axios');
+const axios = require('axios');
 
 dotenv.config(); // solo para desarrollo local
 
