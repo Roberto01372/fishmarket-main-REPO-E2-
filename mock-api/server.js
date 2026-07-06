@@ -7,6 +7,7 @@ const dns = require('dns');
 const path = require('path');
 const dotenv = require('dotenv');
 const { Pool } = require('pg');
+const axios = requires('axios');
 
 dotenv.config(); // solo para desarrollo local
 
@@ -15,6 +16,8 @@ const port = Number(process.env.PORT || 3000);
 
 app.use(cors());
 app.use(express.json());
+
+const G2_BASE_URL = process.env.G2_BASE_URL || 'https://prueba.minimarketplace.cl'; // Integración con el grupo 2
 
 // ==========================================
 // CONFIGURACIÓN Y PARSEO DE BASE DE DATOS
@@ -27,7 +30,9 @@ const normalizeConnectionString = (connectionString) => {
     : `${connectionString}?sslmode=require`;
 };
 
-const dbUrl = process.env.DATABASE_URL ? normalizeConnectionString(process.env.DATABASE_URL) : undefined;
+const dbUrl = process.env.DATABASE_URL 
+  ? normalizeConnectionString(process.env.DATABASE_URL) 
+  : undefined;
 
 const resolveHostIPv4 = (hostname) => {
   return new Promise((resolve) => {
@@ -56,7 +61,6 @@ const parseDatabaseUrl = async (connectionString) => {
   }
 };
 
-let poolConfig = null;
 let pool = null;
 let dbAvailable = false;
 let dbErrorMessage = null;
@@ -65,7 +69,27 @@ const quoteIdentifier = (value) => `"${String(value).replace(/"/g, '""')}"`;
 const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // ==========================================
-// FUNCIONES AUXILIARES DE NEGOCIO
+// INTEGRACIÓN CON G2 — Validar token
+// ==========================================
+async function validateTokenWithG2(authHeader) {
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+  try {
+    const response = await axios.get(`${G2_BASE_URL}/auth/validate`, {
+      headers: {
+        Authorization: authHeader,
+        'X-Consumer': 'order-service'
+      }
+    });
+    // G2 devuelve business_user_id en el perfil
+    return response.data;
+  } catch (error) {
+    console.error('Error validando token con G2:', error.response?.data || error.message);
+    return null;
+  }
+}
+
+// ==========================================
+// FUNCIONES AUXILIARES
 // ==========================================
 async function findProductStock(productId) {
   if (!pool || !productId) return null;
@@ -115,22 +139,61 @@ app.get('/health', async (_req, res) => {
 });
 
 // ==========================================
-// METODO 1: POST /orders (Crear pedido)
+// POST /orders — Crear pedido (integrado con G2)
 // ==========================================
 app.post('/orders', async (req, res) => {
-  const { userId, items } = req.body || {};
+  const authHeader = req.headers['authorization'];
   const idempotencyKey = req.headers['idempotency-key'];
   const correlationId = req.headers['x-correlation-id'] || 'local';
   const now = new Date().toISOString();
 
-  if (!userId || !Array.isArray(items) || items.length === 0 || !idempotencyKey) {
-    return res.status(400).json({ timestamp: now, status: 400, code: 'INVALID_REQUEST', message: 'userId, items e idempotency-key son requeridos.', correlationId });
+  // 1. Validar token con G2
+  const userProfile = await validateTokenWithG2(authHeader);
+  if (!userProfile) {
+    return res.status(401).json({
+      timestamp: now,
+      status: 401,
+      code: 'UNAUTHORIZED',
+      message: 'Token inválido o expirado. Autentícate primero con el servicio de Identidad (G2).',
+      correlationId
+    });
+  }
+
+  // 2. Obtener business_user_id de G2
+  const userId = userProfile.business_user_id;
+  if (!userId) {
+    return res.status(422).json({
+      timestamp: now,
+      status: 422,
+      code: 'MISSING_BUSINESS_USER_ID',
+      message: 'El perfil del usuario no tiene business_user_id registrado en G2.',
+      correlationId
+    });
+  }
+
+  // 3. Validar body
+  const { items } = req.body || {};
+  if (!Array.isArray(items) || items.length === 0 || !idempotencyKey) {
+    return res.status(400).json({
+      timestamp: now,
+      status: 400,
+      code: 'INVALID_REQUEST',
+      message: 'items e idempotency-key son requeridos.',
+      correlationId
+    });
   }
 
   if (!pool || !dbAvailable) {
-    return res.status(500).json({ timestamp: now, status: 500, code: 'DATABASE_UNAVAILABLE', message: 'La base de datos de Supabase no está disponible.', correlationId });
+    return res.status(500).json({
+      timestamp: now,
+      status: 500,
+      code: 'DATABASE_UNAVAILABLE',
+      message: 'La base de datos no está disponible.',
+      correlationId
+    });
   }
 
+  // 4. Validar stock de cada producto
   const orderItems = [];
   for (const item of items) {
     const productId = String(item.productId).trim();
@@ -138,21 +201,40 @@ app.post('/orders', async (req, res) => {
     const unitPrice = Number(item.unitPrice || 0);
 
     if (!productId || quantity <= 0) {
-      return res.status(400).json({ timestamp: now, status: 400, code: 'INVALID_REQUEST', message: 'Cada item requiere un productId y cantidad positiva.', correlationId });
+      return res.status(400).json({
+        timestamp: now,
+        status: 400,
+        code: 'INVALID_REQUEST',
+        message: 'Cada item requiere productId y cantidad positiva.',
+        correlationId
+      });
     }
 
     const stockInfo = await findProductStock(productId);
     if (!stockInfo) {
-      return res.status(422).json({ timestamp: now, status: 422, code: 'PRODUCT_NOT_FOUND', message: `No se encontró el producto ${productId}`, correlationId });
+      return res.status(422).json({
+        timestamp: now,
+        status: 422,
+        code: 'PRODUCT_NOT_FOUND',
+        message: `No se encontró el producto ${productId}`,
+        correlationId
+      });
     }
 
     if (stockInfo.stock < quantity) {
-      return res.status(422).json({ timestamp: now, status: 422, code: 'OUT_OF_STOCK', message: `El producto ${productId} tiene stock ${stockInfo.stock} y se pidió ${quantity}`, correlationId });
+      return res.status(422).json({
+        timestamp: now,
+        status: 422,
+        code: 'OUT_OF_STOCK',
+        message: `El producto ${productId} tiene stock ${stockInfo.stock} y se pidió ${quantity}`,
+        correlationId
+      });
     }
 
     orderItems.push({ productId, quantity, unitPrice, subtotal: unitPrice * quantity });
   }
 
+  // 5. Crear pedido en transacción
   const totalAmount = orderItems.reduce((sum, item) => sum + item.subtotal, 0);
   const orderNumber = `ORD-${Date.now()}`;
   const client = await pool.connect();
@@ -160,103 +242,134 @@ app.post('/orders', async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    const insertOrderQuery = `
-      INSERT INTO orders (order_number, user_id, total_amount, status, idempotency_key, created_at, updated_at)
-      VALUES ($1, $2, $3, 'CREATED', $4, $5, $5) RETURNING id;
-    `;
-    
     let orderUuid;
     try {
-      const orderResult = await client.query(insertOrderQuery, [orderNumber, userId, totalAmount, idempotencyKey, now]);
+      const orderResult = await client.query(
+        `INSERT INTO orders (order_number, user_id, total_amount, status, idempotency_key, created_at, updated_at)
+         VALUES ($1, $2, $3, 'CREATED', $4, $5, $5) RETURNING id;`,
+        [orderNumber, userId, totalAmount, idempotencyKey, now]
+      );
       orderUuid = orderResult.rows[0].id;
     } catch (dbErr) {
-      if (dbErr.code === '23505') { 
+      if (dbErr.code === '23505') {
         await client.query('ROLLBACK');
-        return res.status(409).json({ timestamp: now, status: 409, code: 'IDEMPOTENCY_CONFLICT', message: 'Esta orden ya fue procesada previamente.', correlationId });
+        return res.status(409).json({
+          timestamp: now,
+          status: 409,
+          code: 'IDEMPOTENCY_CONFLICT',
+          message: 'Esta orden ya fue procesada previamente.',
+          correlationId
+        });
       }
       throw dbErr;
     }
 
-    await client.query(`INSERT INTO order_status_history (order_id, previous_status, new_status, reason, changed_at) VALUES ($1, NULL, 'CREATED', 'Orden creada de forma exitosa.', $2);`, [orderUuid, now]);
+    await client.query(
+      `INSERT INTO order_status_history (order_id, previous_status, new_status, reason, changed_at)
+       VALUES ($1, NULL, 'CREATED', 'Orden creada exitosamente.', $2);`,
+      [orderUuid, now]
+    );
 
     for (const item of orderItems) {
-      await client.query(`INSERT INTO order_items (order_id, product_id, quantity, unit_price, subtotal, created_at) VALUES ($1, $2, $3, $4, $5, $6);`, [orderUuid, item.productId, item.quantity, item.unitPrice, item.subtotal, now]);
-      await client.query(`UPDATE products SET stock = stock - $1 WHERE id = $2;`, [item.quantity, item.productId]);
+      await client.query(
+        `INSERT INTO order_items (order_id, product_id, quantity, unit_price, subtotal, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6);`,
+        [orderUuid, item.productId, item.quantity, item.unitPrice, item.subtotal, now]
+      );
+      await client.query(
+        `UPDATE products SET stock = stock - $1 WHERE id = $2;`,
+        [item.quantity, item.productId]
+      );
     }
 
-    await client.query(`INSERT INTO outbox_events (event_type, correlation_id, aggregate_id, payload, occurred_at, created_at) VALUES ($1, $2, $3, $4, $5, $5);`, ['OrderCreated', correlationId, orderUuid, JSON.stringify({ orderId: orderUuid, orderNumber, userId, totalAmount, items: orderItems }), now]);
+    await client.query(
+      `INSERT INTO outbox_events (event_type, correlation_id, aggregate_id, payload, occurred_at, created_at)
+       VALUES ($1, $2, $3, $4, $5, $5);`,
+      ['OrderCreated', correlationId, orderUuid,
+       JSON.stringify({ orderId: orderUuid, orderNumber, userId, totalAmount, items: orderItems }), now]
+    );
 
     await client.query('COMMIT');
-    return res.status(201).json({ id: orderUuid, orderNumber, userId, status: 'CREATED', totalAmount, items: orderItems, createdAt: now, updatedAt: now });
+
+    return res.status(201).json({
+      id: orderUuid,
+      orderNumber,
+      userId,
+      status: 'CREATED',
+      totalAmount,
+      items: orderItems,
+      createdAt: now,
+      updatedAt: now
+    });
 
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error('Error en transacción de Supabase:', error);
-    return res.status(500).json({ timestamp: now, status: 500, code: 'ORDER_TRANSACTION_FAILED', message: 'Error interno al guardar la orden.', error: error.message, correlationId });
+    console.error('Error en transacción:', error);
+    return res.status(500).json({
+      timestamp: now,
+      status: 500,
+      code: 'ORDER_TRANSACTION_FAILED',
+      message: 'Error interno al guardar la orden.',
+      error: error.message,
+      correlationId
+    });
   } finally {
     client.release();
   }
 });
 
 // ==========================================
-// METODO 2: GET /orders (Listar pedidos de usuario paginado)
+// GET /orders — Listar pedidos paginados
 // ==========================================
 app.get('/orders', async (req, res) => {
   if (!pool || !dbAvailable) {
-    return res.status(500).json({ error: 'La base de datos de Supabase no está disponible.' });
+    return res.status(500).json({ error: 'Base de datos no disponible.' });
   }
-
   const { userId, page = 1, limit = 10 } = req.query;
-
   if (!userId) {
-    return res.status(400).json({ code: 'MISSING_USER_ID', message: 'El parámetro query "userId" es requerido.' });
+    return res.status(400).json({ code: 'MISSING_USER_ID', message: 'El parámetro userId es requerido.' });
   }
-
   const offset = (Number(page) - 1) * Number(limit);
-
   try {
     const countResult = await pool.query('SELECT COUNT(*) AS total FROM orders WHERE user_id = $1', [userId]);
     const totalItems = Number(countResult.rows[0].total) || 0;
-
-    const ordersQuery = `
-      SELECT id, order_number, user_id, status, total_amount, created_at, updated_at 
-      FROM orders WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
-    `;
-    const ordersResult = await pool.query(ordersQuery, [userId, Number(limit), offset]);
-
+    const ordersResult = await pool.query(
+      `SELECT id, order_number, user_id, status, total_amount, created_at, updated_at
+       FROM orders WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+      [userId, Number(limit), offset]
+    );
     return res.json({
       data: ordersResult.rows,
       pagination: { totalItems, currentPage: Number(page), limit: Number(limit), totalPages: Math.ceil(totalItems / Number(limit)) }
     });
   } catch (error) {
-    console.error('Error en GET /orders:', error.message);
-    return res.status(500).json({ error: 'Error al obtener los pedidos.', details: error.message });
+    return res.status(500).json({ error: 'Error al obtener pedidos.', details: error.message });
   }
 });
 
 // ==========================================
-// METODO 3: GET /orders/:id (Obtener pedido por ID)
+// GET /orders/:id — Obtener pedido por ID
 // ==========================================
 app.get('/orders/:id', async (req, res) => {
   if (!pool || !dbAvailable) {
-    return res.status(500).json({ error: 'La base de datos de Supabase no está disponible.' });
+    return res.status(500).json({ error: 'Base de datos no disponible.' });
   }
-
   const orderId = req.params.id;
   if (!uuidRegex.test(orderId)) {
-    return res.status(400).json({ code: 'INVALID_UUID_FORMAT', message: 'El ID de la orden debe ser un UUID válido.' });
+    return res.status(400).json({ code: 'INVALID_UUID_FORMAT', message: 'El ID debe ser un UUID válido.' });
   }
-
   try {
     const orderResult = await pool.query('SELECT * FROM orders WHERE id = $1 LIMIT 1', [orderId]);
     if (orderResult.rows.length === 0) {
-      return res.status(404).json({ message: `La orden con ID ${orderId} no fue encontrada.` });
+      return res.status(404).json({ message: `La orden ${orderId} no fue encontrada.` });
     }
-
     const orderData = orderResult.rows[0];
-    const itemsResult = await pool.query('SELECT id, product_id, quantity, unit_price, subtotal FROM order_items WHERE order_id = $1', [orderId]);
-    const historyResult = await pool.query('SELECT previous_status, new_status, reason, changed_at FROM order_status_history WHERE order_id = $1 ORDER BY changed_at ASC', [orderId]);
-
+    const itemsResult = await pool.query(
+      'SELECT id, product_id, quantity, unit_price, subtotal FROM order_items WHERE order_id = $1', [orderId]
+    );
+    const historyResult = await pool.query(
+      'SELECT previous_status, new_status, reason, changed_at FROM order_status_history WHERE order_id = $1 ORDER BY changed_at ASC', [orderId]
+    );
     return res.json({
       id: orderData.id,
       orderNumber: orderData.order_number,
@@ -270,86 +383,83 @@ app.get('/orders/:id', async (req, res) => {
       history: historyResult.rows
     });
   } catch (error) {
-    return res.status(500).json({ error: 'Error interno al consultar la orden.', details: error.message });
+    return res.status(500).json({ error: 'Error al consultar la orden.', details: error.message });
   }
 });
 
 // ==========================================
-// METODO 4: PATCH /orders/:id (Actualizar estado de un pedido)
+// PATCH /orders/:id — Actualizar estado
 // ==========================================
 app.patch('/orders/:id', async (req, res) => {
   if (!pool || !dbAvailable) {
-    return res.status(500).json({ error: 'La base de datos de Supabase no está disponible.' });
+    return res.status(500).json({ error: 'Base de datos no disponible.' });
   }
-
   const orderId = req.params.id;
   const { status, reason } = req.body || {};
   const correlationId = req.headers['x-correlation-id'] || 'local';
   const now = new Date().toISOString();
 
   if (!uuidRegex.test(orderId)) {
-    return res.status(400).json({ code: 'INVALID_UUID_FORMAT', message: 'El ID de la orden debe ser un UUID válido.' });
+    return res.status(400).json({ code: 'INVALID_UUID_FORMAT', message: 'El ID debe ser un UUID válido.' });
   }
-
   if (!status) {
-    return res.status(400).json({ code: 'BAD_REQUEST', message: 'El campo "status" es requerido en el body.' });
+    return res.status(400).json({ code: 'BAD_REQUEST', message: 'El campo status es requerido.' });
   }
 
   const client = await pool.connect();
-
   try {
     await client.query('BEGIN');
-
-    const currentOrderResult = await client.query('SELECT status, order_number, user_id FROM orders WHERE id = $1 LIMIT 1', [orderId]);
-    if (currentOrderResult.rows.length === 0) {
+    const currentResult = await client.query(
+      'SELECT status, order_number, user_id FROM orders WHERE id = $1 LIMIT 1', [orderId]
+    );
+    if (currentResult.rows.length === 0) {
       await client.query('ROLLBACK');
-      return res.status(404).json({ message: `La orden con ID ${orderId} no existe.` });
+      return res.status(404).json({ message: `La orden ${orderId} no existe.` });
     }
+    const previousStatus = currentResult.rows[0].status;
+    const orderNumber = currentResult.rows[0].order_number;
+    const userId = currentResult.rows[0].user_id;
 
-    const previousStatus = currentOrderResult.rows[0].status;
-    const orderNumber = currentOrderResult.rows[0].order_number;
-    const userId = currentOrderResult.rows[0].user_id;
-
-    const updatedOrderResult = await client.query('UPDATE orders SET status = $1, updated_at = $2 WHERE id = $3 RETURNING *', [status.toUpperCase(), now, orderId]);
-    const updatedOrder = updatedOrderResult.rows[0];
-
-    await client.query('INSERT INTO order_status_history (order_id, previous_status, new_status, reason, changed_at) VALUES ($1, $2, $3, $4, $5)', 
-      [orderId, previousStatus, status.toUpperCase(), reason || 'Actualización de estado.', now]);
-
-    const eventPayload = { orderId, orderNumber, userId, previousStatus, newStatus: status.toUpperCase(), reason };
-    await client.query('INSERT INTO outbox_events (event_type, correlation_id, aggregate_id, payload, occurred_at, created_at) VALUES ($1, $2, $3, $4, $5, $5)',
-      ['OrderStatusChanged', correlationId, orderId, JSON.stringify(eventPayload), now]);
-
+    const updatedResult = await client.query(
+      'UPDATE orders SET status = $1, updated_at = $2 WHERE id = $3 RETURNING *',
+      [status.toUpperCase(), now, orderId]
+    );
+    await client.query(
+      'INSERT INTO order_status_history (order_id, previous_status, new_status, reason, changed_at) VALUES ($1, $2, $3, $4, $5)',
+      [orderId, previousStatus, status.toUpperCase(), reason || 'Actualización de estado.', now]
+    );
+    await client.query(
+      'INSERT INTO outbox_events (event_type, correlation_id, aggregate_id, payload, occurred_at, created_at) VALUES ($1, $2, $3, $4, $5, $5)',
+      ['OrderStatusChanged', correlationId, orderId,
+       JSON.stringify({ orderId, orderNumber, userId, previousStatus, newStatus: status.toUpperCase(), reason }), now]
+    );
     await client.query('COMMIT');
 
     return res.json({
-      message: 'Estado de la orden actualizado con éxito.',
-      orderId: updatedOrder.id,
-      orderNumber: updatedOrder.order_number,
+      message: 'Estado actualizado con éxito.',
+      orderId: updatedResult.rows[0].id,
+      orderNumber: updatedResult.rows[0].order_number,
       previousStatus,
-      newStatus: updatedOrder.status,
-      updatedAt: updatedOrder.updated_at
+      newStatus: updatedResult.rows[0].status,
+      updatedAt: updatedResult.rows[0].updated_at
     });
-
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error('Error en PATCH /orders/:id:', error.message);
-    return res.status(500).json({ error: 'Error al cambiar el estado del pedido.', details: error.message });
+    return res.status(500).json({ error: 'Error al cambiar el estado.', details: error.message });
   } finally {
     client.release();
   }
 });
 
 // ==========================================
-// ARRANQUE SEGURO Y SINCRONIZADO (REEMPLAZA AL APP.LISTEN VIEJO)
+// ARRANQUE
 // ==========================================
 const startServer = async () => {
   if (dbUrl) {
-    poolConfig = await parseDatabaseUrl(dbUrl);
+    const poolConfig = await parseDatabaseUrl(dbUrl);
     if (poolConfig) {
       pool = new Pool(poolConfig);
       try {
-        // Forzamos a esperar a Supabase antes de abrir el puerto
         await pool.query('SELECT 1');
         dbAvailable = true;
         console.log('Postgres connection OK con Supabase');
@@ -359,14 +469,11 @@ const startServer = async () => {
       }
     }
   } else {
-    console.error('No se detectó la variable DATABASE_URL');
+    console.error('No se detectó DATABASE_URL');
   }
-
-  // Tu app.listen original ahora vive protegido aquí adentro:
   app.listen(port, () => {
     console.log(`Order service listening on port ${port}`);
   });
 };
 
-// Ejecutamos la función para iniciar todo en el orden correcto
 startServer();
