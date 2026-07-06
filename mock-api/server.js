@@ -80,10 +80,11 @@ async function validateTokenWithG2(authHeader) {
         'X-Consumer': 'order-service'
       }
     });
-    // G2 devuelve business_user_id en el perfil
+    console.log('G2 validate response:', JSON.stringify(response.data));
     return response.data;
   } catch (error) {
-    console.error('Error validando token con G2:', error.response?.data || error.message);
+    console.error('G2 validate error status:', error.response?.status);
+    console.error('G2 validate error data:', JSON.stringify(error.response?.data));
     return null;
   }
 }
