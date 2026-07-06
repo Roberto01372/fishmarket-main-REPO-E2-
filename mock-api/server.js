@@ -17,7 +17,7 @@ const port = Number(process.env.PORT || 3000);
 app.use(cors());
 app.use(express.json());
 
-const G2_BASE_URL = process.env.G2_BASE_URL || 'https://prueba.minimarketplace.cl'; // Integración con el grupo 2
+const G2_BASE_URL = process.env.G2_BASE_URL || 'https://auth-minimarket-cloud.onrender.com'; // Integración con el grupo 2
 
 // ==========================================
 // CONFIGURACIÓN Y PARSEO DE BASE DE DATOS
