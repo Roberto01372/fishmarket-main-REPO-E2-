@@ -1,15 +1,23 @@
 // ==========================================
-// Gurpo 5 Pedidos / Order Management: Crear y administrar el ciclo de vida de un pedido.
+// Grupo 5 - Order Management
+// Crear y administrar el ciclo de vida de un pedido.
+// Integración:
+// G2 -> Autenticación
+// G7 -> Inventario
+// G6 -> Pagos
+// G8 -> Despacho
 // ==========================================
-const express = require('express');
-const cors = require('cors');
-const dns = require('dns');
-const path = require('path');
-const dotenv = require('dotenv');
-const { Pool } = require('pg');
-const axios = require('axios');
 
-dotenv.config(); // solo para desarrollo local
+const express = require("express");
+const cors = require("cors");
+const dns = require("dns");
+const path = require('path');
+const dotenv = require("dotenv");
+const { Pool } = require("pg");
+const axios = require("axios");
+const crypto = require("crypto");
+
+dotenv.config();
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -17,115 +25,262 @@ const port = Number(process.env.PORT || 3000);
 app.use(cors());
 app.use(express.json());
 
-const G2_BASE_URL = process.env.G2_BASE_URL || 'https://auth-minimarket-cloud.onrender.com'; // Integración con el grupo 2.
-const G6_BASE_URL = process.env.G6_BASE_URL || 'https://payment-service-g6-1.onrender.com'; // Integración con el grupo 6.
-const G7_BASE_URL = process.env.G7_BASE_URL || 'https://inventario-g7.onrender.com'; // Integración con el grupo 7.
-const G8_BASE_URL = process.env.G8_BASE_URL || 'https://arq-microservicio-de-despacho-y-logistica.onrender.com'; // Integración con el grupo 8.
+// ==========================================
+// URLs de integración
+// ==========================================
+
+const G2_BASE_URL =
+    process.env.G2_BASE_URL ||
+    "https://auth-minimarket-cloud.onrender.com";
+
+const G6_BASE_URL =
+    process.env.G6_BASE_URL ||
+    "https://payment-service-g6-1.onrender.com";
+
+const G7_BASE_URL =
+    process.env.G7_BASE_URL ||
+    "https://inventario-g7.onrender.com";
+
+const G8_BASE_URL =
+    process.env.G8_BASE_URL ||
+    "https://arq-microservicio-de-despacho-y-logistica.onrender.com";
+
 
 // ==========================================
-// CONFIGURACIÓN Y PARSEO DE BASE DE DATOS
+// Base de datos
 // ==========================================
+
 const normalizeConnectionString = (connectionString) => {
-  if (!connectionString) return undefined;
-  if (connectionString.includes('sslmode=')) return connectionString;
-  return connectionString.includes('?')
-    ? `${connectionString}&sslmode=require`
-    : `${connectionString}?sslmode=require`;
+    if (!connectionString) return undefined;
+
+    if (connectionString.includes("sslmode="))
+        return connectionString;
+
+    return connectionString.includes("?")
+        ? `${connectionString}&sslmode=require`
+        : `${connectionString}?sslmode=require`;
 };
 
-const dbUrl = process.env.DATABASE_URL 
-  ? normalizeConnectionString(process.env.DATABASE_URL) 
-  : undefined;
+const dbUrl = process.env.DATABASE_URL
+    ? normalizeConnectionString(process.env.DATABASE_URL)
+    : undefined;
 
 const resolveHostIPv4 = (hostname) => {
-  return new Promise((resolve) => {
-    dns.lookup(hostname, { family: 4 }, (err, address) => {
-      resolve(err ? null : address);
+    return new Promise((resolve) => {
+        dns.lookup(hostname, { family: 4 }, (err, address) => {
+            resolve(err ? null : address);
+        });
     });
-  });
 };
 
 const parseDatabaseUrl = async (connectionString) => {
-  try {
-    const url = new URL(connectionString);
-    const ipv4 = await resolveHostIPv4(url.hostname);
-    return {
-      host: ipv4 || url.hostname,
-      port: Number(url.port || 5432),
-      user: decodeURIComponent(url.username),
-      password: decodeURIComponent(url.password),
-      database: url.pathname?.slice(1),
-      ssl: { rejectUnauthorized: false },
-      family: 4,
-    };
-  } catch (error) {
-    console.error('Failed to parse DATABASE_URL:', error.message);
-    return null;
-  }
+
+    try {
+
+        const url = new URL(connectionString);
+
+        const ipv4 = await resolveHostIPv4(url.hostname);
+
+        return {
+
+            host: ipv4 || url.hostname,
+            port: Number(url.port || 5432),
+            user: decodeURIComponent(url.username),
+            password: decodeURIComponent(url.password),
+            database: url.pathname.slice(1),
+            ssl: {
+                rejectUnauthorized: false
+            },
+            family: 4
+
+        };
+
+    } catch (err) {
+
+        console.error("DATABASE_URL:", err.message);
+
+        return null;
+
+    }
+
 };
 
 let pool = null;
 let dbAvailable = false;
 let dbErrorMessage = null;
 
-const quoteIdentifier = (value) => `"${String(value).replace(/"/g, '""')}"`;
-const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const uuidRegex =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 
 // ==========================================
-// INTEGRACIÓN CON G2 — Validar token
+// G2
+// Validación de token
 // ==========================================
+
 async function validateTokenWithG2(authHeader) {
-  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
-  try {
-    const response = await axios.get(`${G2_BASE_URL}/auth/validate`, {
-      headers: {
-        Authorization: authHeader,
-        'X-Consumer': 'order-service'
-      }
-    });
-    console.log('G2 validate response:', JSON.stringify(response.data));
-    return response.data;
-  } catch (error) {
-    console.error('G2 validate error status:', error.response?.status);
-    console.error('G2 validate error data:', JSON.stringify(error.response?.data));
-    return null;
-  }
-}
 
-// ==========================================
-// FUNCIONES AUXILIARES
-// ==========================================
-async function findProductStock(productId) {
-  if (!pool || !productId) return null;
+    if (!authHeader || !authHeader.startsWith("Bearer "))
+        return null;
 
-  const productTable = process.env.PRODUCTS_TABLE ?? 'products';
-  const idColumn = process.env.PRODUCTS_ID_COLUMN ?? 'id';
-  const stockColumn = process.env.STOCK_COLUMN ?? 'stock';
+    try {
 
-  try {
-    const { rows } = await pool.query(
-      `SELECT ${quoteIdentifier(idColumn)} AS product_id, ${quoteIdentifier(stockColumn)} AS stock FROM ${quoteIdentifier(productTable)} WHERE ${quoteIdentifier(idColumn)} = $1 LIMIT 1`,
-      [productId],
-    );
+        const response = await axios.get(
 
-    if (rows.length > 0) {
-      return {
-        table: productTable,
-        productId: rows[0].product_id,
-        stock: Number(rows[0].stock) || 0,
-        foundOnTable: productTable,
-        idColumn,
-        stockColumn,
-      };
+            `${G2_BASE_URL}/auth/validate`,
+
+            {
+
+                headers: {
+
+                    Authorization: authHeader,
+                    "X-Consumer": "order-service"
+
+                }
+
+            }
+
+        );
+
+        return response.data;
+
+    } catch (error) {
+
+        console.error("Error validando token con G2");
+
+        return null;
+
     }
-    return null;
-  } catch (error) {
-    console.error('findProductStock error:', error.message);
-    return null;
-  }
+
 }
 
 
+// ==========================================
+// G7
+// Reserva de stock
+// ==========================================
+
+async function reserveStockWithG7(
+    orderNumber,
+    orderItems,
+    idempotencyKey
+) {
+
+    try {
+
+        const response = await axios.post(
+
+            `${G7_BASE_URL}/inventory/reserve`,
+
+            {
+
+                orderId: orderNumber,
+
+                items: orderItems.map(item => ({
+
+                    productId: item.productId,
+                    quantity: item.quantity
+
+                }))
+
+            },
+
+            {
+
+                headers: {
+
+                    "Idempotency-Key": idempotencyKey
+
+                }
+
+            }
+
+        );
+
+        return response.data;
+
+    } catch (error) {
+
+        if (error.response) {
+
+            throw {
+
+                status: error.response.status,
+                data: error.response.data
+
+            };
+
+        }
+
+        throw error;
+
+    }
+
+}
+
+
+// ==========================================
+// G7
+// Liberar reserva
+// ==========================================
+
+async function releaseReservationWithG7(orderNumber) {
+
+    try {
+
+        await axios.post(
+
+            `${G7_BASE_URL}/inventory/release`,
+
+            {
+
+                orderId: orderNumber
+
+            }
+
+        );
+
+    } catch (error) {
+
+        console.error(
+            "No fue posible liberar la reserva en G7"
+        );
+
+    }
+
+}
+
+
+// ==========================================
+// G7
+// Confirmar reserva
+// ==========================================
+
+async function confirmReservationWithG7(orderNumber) {
+
+    try {
+
+        await axios.post(
+
+            `${G7_BASE_URL}/inventory/confirm`,
+
+            {
+
+                orderId: orderNumber
+
+            }
+
+        );
+
+    } catch (error) {
+
+        console.error(
+            "No fue posible confirmar la reserva en G7"
+        );
+
+    }
+
+}
 // ==========================================
 // ENDPOINT: HEALTH CHECK
 // ==========================================
@@ -143,183 +298,558 @@ app.get('/health', async (_req, res) => {
 });
 
 // ==========================================
-// POST /orders — Crear pedido (integrado con G2)
+// POST /orders
+// Crear pedido (Integrado G2 + G7)
 // ==========================================
-app.post('/orders', async (req, res) => {
-  const authHeader = req.headers['authorization'];
-  const idempotencyKey = req.headers['idempotency-key'];
-  const correlationId = req.headers['x-correlation-id'] || 'local';
-  const now = new Date().toISOString();
 
-  // 1. Validar token con G2
-  const userProfile = await validateTokenWithG2(authHeader);
-  if (!userProfile) {
-    return res.status(401).json({
-      timestamp: now,
-      status: 401,
-      code: 'UNAUTHORIZED',
-      message: 'Token inválido o expirado. Autentícate primero con el servicio de Identidad (G2).',
-      correlationId
-    });
-  }
+app.post("/orders", async (req, res) => {
 
-  // 2. Obtener business_user_id de G2
-  const userId = userProfile.business_user_id;
-  if (!userId) {
-    return res.status(422).json({
-      timestamp: now,
-      status: 422,
-      code: 'MISSING_BUSINESS_USER_ID',
-      message: 'El perfil del usuario no tiene business_user_id registrado en G2.',
-      correlationId
-    });
-  }
+    const authHeader = req.headers["authorization"];
 
-  // 3. Validar body
-  const { items } = req.body || {};
-  if (!Array.isArray(items) || items.length === 0 || !idempotencyKey) {
-    return res.status(400).json({
-      timestamp: now,
-      status: 400,
-      code: 'INVALID_REQUEST',
-      message: 'items e idempotency-key son requeridos.',
-      correlationId
-    });
-  }
+    const idempotencyKey =
+        req.headers["idempotency-key"];
 
-  if (!pool || !dbAvailable) {
-    return res.status(500).json({
-      timestamp: now,
-      status: 500,
-      code: 'DATABASE_UNAVAILABLE',
-      message: 'La base de datos no está disponible.',
-      correlationId
-    });
-  }
+    const correlationId =
+        req.headers["x-correlation-id"] || "local";
 
-  // 4. Validar stock de cada producto
-  const orderItems = [];
-  for (const item of items) {
-    const productId = String(item.productId).trim();
-    const quantity = Number(item.quantity || 0);
-    const unitPrice = Number(item.unitPrice || 0);
+    const now = new Date().toISOString();
 
-    if (!productId || quantity <= 0) {
-      return res.status(400).json({
-        timestamp: now,
-        status: 400,
-        code: 'INVALID_REQUEST',
-        message: 'Cada item requiere productId y cantidad positiva.',
-        correlationId
-      });
-    }
 
-    const stockInfo = await findProductStock(productId);
-    if (!stockInfo) {
-      return res.status(422).json({
-        timestamp: now,
-        status: 422,
-        code: 'PRODUCT_NOT_FOUND',
-        message: `No se encontró el producto ${productId}`,
-        correlationId
-      });
-    }
+    //---------------------------------------
+    // Validar token G2
+    //---------------------------------------
 
-    if (stockInfo.stock < quantity) {
-      return res.status(422).json({
-        timestamp: now,
-        status: 422,
-        code: 'OUT_OF_STOCK',
-        message: `El producto ${productId} tiene stock ${stockInfo.stock} y se pidió ${quantity}`,
-        correlationId
-      });
-    }
+    const userProfile =
+        await validateTokenWithG2(authHeader);
 
-    orderItems.push({ productId, quantity, unitPrice, subtotal: unitPrice * quantity });
-  }
+    if (!userProfile) {
 
-  // 5. Crear pedido en transacción
-  const totalAmount = orderItems.reduce((sum, item) => sum + item.subtotal, 0);
-  const orderNumber = `ORD-${Date.now()}`;
-  const client = await pool.connect();
+        return res.status(401).json({
 
-  try {
-    await client.query('BEGIN');
+            timestamp: now,
+            status: 401,
+            code: "UNAUTHORIZED",
+            message: "Token inválido.",
+            correlationId
 
-    let orderUuid;
-    try {
-      const orderResult = await client.query(
-        `INSERT INTO orders (order_number, user_id, total_amount, status, idempotency_key, created_at, updated_at)
-         VALUES ($1, $2, $3, 'CREATED', $4, $5, $5) RETURNING id;`,
-        [orderNumber, userId, totalAmount, idempotencyKey, now]
-      );
-      orderUuid = orderResult.rows[0].id;
-    } catch (dbErr) {
-      if (dbErr.code === '23505') {
-        await client.query('ROLLBACK');
-        return res.status(409).json({
-          timestamp: now,
-          status: 409,
-          code: 'IDEMPOTENCY_CONFLICT',
-          message: 'Esta orden ya fue procesada previamente.',
-          correlationId
         });
-      }
-      throw dbErr;
+
     }
 
-    await client.query(
-      `INSERT INTO order_status_history (order_id, previous_status, new_status, reason, changed_at)
-       VALUES ($1, NULL, 'CREATED', 'Orden creada exitosamente.', $2);`,
-      [orderUuid, now]
-    );
 
-    for (const item of orderItems) {
-      await client.query(
-        `INSERT INTO order_items (order_id, product_id, quantity, unit_price, subtotal, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6);`,
-        [orderUuid, item.productId, item.quantity, item.unitPrice, item.subtotal, now]
-      );
-      await client.query(
-        `UPDATE products SET stock = stock - $1 WHERE id = $2;`,
-        [item.quantity, item.productId]
-      );
+    const userId =
+        userProfile.business_user_id;
+
+    if (!userId) {
+
+        return res.status(422).json({
+
+            timestamp: now,
+            status: 422,
+            code: "MISSING_BUSINESS_USER_ID",
+            message: "business_user_id inexistente.",
+            correlationId
+
+        });
+
     }
 
-    await client.query(
-      `INSERT INTO outbox_events (event_type, correlation_id, aggregate_id, payload, occurred_at, created_at)
-       VALUES ($1, $2, $3, $4, $5, $5);`,
-      ['OrderCreated', correlationId, orderUuid,
-       JSON.stringify({ orderId: orderUuid, orderNumber, userId, totalAmount, items: orderItems }), now]
-    );
 
-    await client.query('COMMIT');
+    //---------------------------------------
+    // Validar body
+    //---------------------------------------
 
-    return res.status(201).json({
-      id: orderUuid,
-      orderNumber,
-      userId,
-      status: 'CREATED',
-      totalAmount,
-      items: orderItems,
-      createdAt: now,
-      updatedAt: now
-    });
+    const { items } = req.body || {};
 
-  } catch (error) {
-    await client.query('ROLLBACK');
-    console.error('Error en transacción:', error);
-    return res.status(500).json({
-      timestamp: now,
-      status: 500,
-      code: 'ORDER_TRANSACTION_FAILED',
-      message: 'Error interno al guardar la orden.',
-      error: error.message,
-      correlationId
-    });
-  } finally {
-    client.release();
-  }
+    if (
+        !Array.isArray(items) ||
+        items.length === 0
+    ) {
+
+        return res.status(400).json({
+
+            timestamp: now,
+            status: 400,
+            code: "INVALID_REQUEST",
+            message: "items requerido.",
+            correlationId
+
+        });
+
+    }
+
+
+    if (!idempotencyKey) {
+
+        return res.status(400).json({
+
+            timestamp: now,
+            status: 400,
+            code: "MISSING_IDEMPOTENCY_KEY",
+            message: "Idempotency-Key requerido.",
+            correlationId
+
+        });
+
+    }
+
+
+    //---------------------------------------
+    // BD disponible
+    //---------------------------------------
+
+    if (!pool || !dbAvailable) {
+
+        return res.status(500).json({
+
+            timestamp: now,
+            status: 500,
+            code: "DATABASE_UNAVAILABLE",
+            message: "Base de datos no disponible.",
+            correlationId
+
+        });
+
+    }
+
+
+    //---------------------------------------
+    // Construir items
+    //---------------------------------------
+
+    const orderItems = [];
+
+    for (const item of items) {
+
+        const productId =
+            String(item.productId).trim();
+
+        const quantity =
+            Number(item.quantity);
+
+        const unitPrice =
+            Number(item.unitPrice);
+
+        if (
+            !productId ||
+            quantity <= 0
+        ) {
+
+            return res.status(400).json({
+
+                timestamp: now,
+                status: 400,
+                code: "INVALID_ITEM",
+                message: "Producto inválido.",
+                correlationId
+
+            });
+
+        }
+
+        orderItems.push({
+
+            productId,
+            quantity,
+            unitPrice,
+            subtotal:
+                quantity * unitPrice
+
+        });
+
+    }
+
+
+    //---------------------------------------
+    // Total
+    //---------------------------------------
+
+    const totalAmount =
+        orderItems.reduce(
+
+            (sum, item) =>
+                sum + item.subtotal,
+
+            0
+
+        );
+
+
+    //---------------------------------------
+    // Número de orden
+    //---------------------------------------
+
+    const orderNumber =
+        `ORD-${Date.now()}`;
+
+
+    //---------------------------------------
+    // Reservar stock en G7
+    //---------------------------------------
+
+    let reservation;
+
+    try {
+
+        reservation =
+            await reserveStockWithG7(
+
+                orderNumber,
+                orderItems,
+                idempotencyKey
+
+            );
+
+        console.log(
+            "Reserva creada:",
+            reservation
+        );
+
+    }
+
+    catch (err) {
+
+        return res.status(
+
+            err.status || 500
+
+        ).json({
+
+            timestamp: now,
+            status:
+                err.status || 500,
+
+            code:
+                "STOCK_RESERVATION_FAILED",
+
+            message:
+                "No fue posible reservar stock.",
+
+            details:
+                err.data,
+
+            correlationId
+
+        });
+
+    }
+
+    const client =
+        await pool.connect();
+        
+    try {
+
+        await client.query("BEGIN");
+
+        //--------------------------------------------------
+        // Crear orden
+        //--------------------------------------------------
+
+        let orderUuid;
+
+        try {
+
+            const orderResult = await client.query(
+
+                `INSERT INTO orders
+                (
+                    order_number,
+                    user_id,
+                    total_amount,
+                    status,
+                    idempotency_key,
+                    created_at,
+                    updated_at
+                )
+
+                VALUES
+
+                (
+                    $1,
+                    $2,
+                    $3,
+                    'STOCK_RESERVED',
+                    $4,
+                    $5,
+                    $5
+                )
+
+                RETURNING id`,
+
+                [
+
+                    orderNumber,
+                    userId,
+                    totalAmount,
+                    idempotencyKey,
+                    now
+
+                ]
+
+            );
+
+            orderUuid =
+                orderResult.rows[0].id;
+
+        }
+
+        catch (dbErr) {
+
+            //-----------------------------------------
+            // Si falla la BD
+            // liberar reserva en G7
+            //-----------------------------------------
+
+            await releaseReservationWithG7(
+                orderNumber
+            );
+
+            if (dbErr.code === "23505") {
+
+                await client.query("ROLLBACK");
+
+                return res.status(409).json({
+
+                    timestamp: now,
+                    status: 409,
+                    code: "IDEMPOTENCY_CONFLICT",
+                    message:
+                        "La orden ya existe.",
+
+                    correlationId
+
+                });
+
+            }
+
+            throw dbErr;
+
+        }
+
+
+        //--------------------------------------------------
+        // Historial
+        //--------------------------------------------------
+
+        await client.query(
+
+            `INSERT INTO order_status_history
+
+            (
+                order_id,
+                previous_status,
+                new_status,
+                reason,
+                changed_at
+            )
+
+            VALUES
+
+            (
+                $1,
+                NULL,
+                'STOCK_RESERVED',
+                'Stock reservado correctamente.',
+                $2
+            )`,
+
+            [
+
+                orderUuid,
+                now
+
+            ]
+
+        );
+
+
+        //--------------------------------------------------
+        // Items
+        //--------------------------------------------------
+
+        for (const item of orderItems) {
+
+            await client.query(
+
+                `INSERT INTO order_items
+
+                (
+                    order_id,
+                    product_id,
+                    quantity,
+                    unit_price,
+                    subtotal,
+                    created_at
+                )
+
+                VALUES
+
+                (
+                    $1,
+                    $2,
+                    $3,
+                    $4,
+                    $5,
+                    $6
+                )`,
+
+                [
+
+                    orderUuid,
+                    item.productId,
+                    item.quantity,
+                    item.unitPrice,
+                    item.subtotal,
+                    now
+
+                ]
+
+            );
+
+        }
+
+
+        //--------------------------------------------------
+        // Outbox
+        //--------------------------------------------------
+
+        await client.query(
+
+            `INSERT INTO outbox_events
+
+            (
+                event_type,
+                correlation_id,
+                aggregate_id,
+                payload,
+                occurred_at,
+                created_at
+            )
+
+            VALUES
+
+            (
+                $1,
+                $2,
+                $3,
+                $4,
+                $5,
+                $5
+            )`,
+
+            [
+
+                "OrderCreated",
+
+                correlationId,
+
+                orderUuid,
+
+                JSON.stringify({
+
+                    orderId: orderUuid,
+
+                    orderNumber,
+
+                    reservationId:
+                        reservation.reservationId,
+
+                    userId,
+
+                    totalAmount,
+
+                    items: orderItems
+
+                }),
+
+                now
+
+            ]
+
+        );
+
+
+        //--------------------------------------------------
+        // Commit
+        //--------------------------------------------------
+
+        await client.query("COMMIT");
+
+
+        //--------------------------------------------------
+        // Respuesta
+        //--------------------------------------------------
+
+        return res.status(201).json({
+
+            id: orderUuid,
+
+            orderNumber,
+
+            reservationId:
+                reservation.reservationId,
+
+            userId,
+
+            status: "STOCK_RESERVED",
+
+            totalAmount,
+
+            items: orderItems,
+
+            createdAt: now,
+
+            updatedAt: now
+
+        });
+
+    }
+
+    catch (error) {
+
+        //-----------------------------------------
+        // Si falla cualquier INSERT
+        // liberar reserva
+        //-----------------------------------------
+
+        try {
+
+            await client.query("ROLLBACK");
+
+        } catch (_) {}
+
+        await releaseReservationWithG7(
+            orderNumber
+        );
+
+        console.error(error);
+
+        return res.status(500).json({
+
+            timestamp: now,
+
+            status: 500,
+
+            code: "ORDER_TRANSACTION_FAILED",
+
+            message:
+                "No fue posible crear el pedido.",
+
+            error:
+                error.message,
+
+            correlationId
+
+        });
+
+    }
+
+    finally {
+
+        client.release();
+
+    }
+
 });
 
 // ==========================================
