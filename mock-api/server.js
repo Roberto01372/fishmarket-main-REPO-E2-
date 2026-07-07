@@ -189,7 +189,8 @@ async function reserveStockWithG7(
 
                 headers: {
 
-                    "Idempotency-Key": idempotencyKey
+                    "Idempotency-Key": idempotencyKey,
+                    "X-consumer": "order-service"
 
                 }
 
