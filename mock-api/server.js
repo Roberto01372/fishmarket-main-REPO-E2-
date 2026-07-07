@@ -16,6 +16,7 @@ const dotenv = require("dotenv");
 const { Pool } = require("pg");
 const axios = require("axios");
 const crypto = require("crypto");
+const amqp = require("amqplib");
 
 dotenv.config();
 
@@ -28,6 +29,11 @@ app.use(express.json());
 // ==========================================
 // URLs de integración
 // ==========================================
+
+const RABBITMQ_URL = // Publicación y consumo de eventos
+    process.env.RABBITMQ_URL || 
+    "amqps://trdnumkd:zG2qJNysAXbBzz70LtdSMetY4P_yo4Rw@jackal.rmq.cloudamqp.com/trdnumkd";
+
 
 const G2_BASE_URL =
     process.env.G2_BASE_URL ||
