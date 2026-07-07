@@ -80,15 +80,10 @@ const resolveHostIPv4 = (hostname) => {
 };
 
 const parseDatabaseUrl = async (connectionString) => {
-
     try {
-
         const url = new URL(connectionString);
-
         const ipv4 = await resolveHostIPv4(url.hostname);
-
         return {
-
             host: ipv4 || url.hostname,
             port: Number(url.port || 5432),
             user: decodeURIComponent(url.username),
@@ -98,17 +93,11 @@ const parseDatabaseUrl = async (connectionString) => {
                 rejectUnauthorized: false
             },
             family: 4
-
         };
-
     } catch (err) {
-
         console.error("DATABASE_URL:", err.message);
-
         return null;
-
     }
-
 };
 
 let pool = null;
@@ -135,251 +124,139 @@ const QUEUE_NAME = "g5-order-service";
 // G2
 // Validación de token
 // ==========================================
-
 async function validateTokenWithG2(authHeader) {
-
     if (!authHeader || !authHeader.startsWith("Bearer "))
         return null;
-
     try {
-
         const response = await axios.get(
-
             `${G2_BASE_URL}/auth/validate`,
-
             {
-
                 headers: {
-
                     Authorization: authHeader,
                     "X-Consumer": "order-service"
-
                 }
-
             }
-
         );
-
         return response.data;
-
     } catch (error) {
-
         console.error("Error validando token con G2");
-
         return null;
-
     }
-
 }
-
 
 // ==========================================
 // G7
 // Reserva de stock
 // ==========================================
-
 async function reserveStockWithG7(
     orderNumber,
     orderItems,
     idempotencyKey
 ) {
-
     try {
-
         const response = await axios.post(
-
             `${G7_BASE_URL}/inventory/reserve`,
-
             {
-
                 orderId: orderNumber,
-
                 items: orderItems.map(item => ({
-
                     productId: item.productId,
                     quantity: item.quantity
-
                 }))
-
             },
-
             {
-
                 headers: {
-
                     "Idempotency-Key": idempotencyKey,
                     "X-consumer": "order-service"
-
                 }
-
             }
-
         );
-
         return response.data;
-
     } catch (error) {
-
         if (error.response) {
-
             throw {
-
                 status: error.response.status,
                 data: error.response.data
-
             };
-
         }
-
         throw error;
-
     }
-
 }
-
 
 // ==========================================
 // G7
 // Liberar reserva
 // ==========================================
-
 async function releaseReservationWithG7(orderNumber) {
-
     try {
-
         await axios.post(
-
             `${G7_BASE_URL}/inventory/release`,
-
             {
-
                 orderId: orderNumber
-
             }
-
         );
-
     } catch (error) {
-
-        console.error(
-            "No fue posible liberar la reserva en G7"
-        );
-
+        console.error("No fue posible liberar la reserva en G7");
     }
-
 }
-
 
 // ==========================================
 // G7
 // Confirmar reserva
 // ==========================================
-
 async function confirmReservationWithG7(orderNumber) {
-
     try {
-
         await axios.post(
-
             `${G7_BASE_URL}/inventory/confirm`,
-
             {
-
                 orderId: orderNumber
-
             }
-
         );
-
     } catch (error) {
-
-        console.error(
-            "No fue posible confirmar la reserva en G7"
-        );
-
+        console.error("No fue posible confirmar la reserva en G7");
     }
-
 }
 
 // ==========================================
 // RabbitMQ
 // Conexión
 // ==========================================
-
 async function connectRabbitMQ() {
-
     try {
-
         rabbitConnection = await amqp.connect(RABBITMQ_URL);
-
         rabbitConnection.on("close", () => {
-
             console.log("RabbitMQ desconectado. Reintentando...");
-
             setTimeout(connectRabbitMQ, 5000);
-
         });
-
         rabbitConnection.on("error", (err) => {
-
             console.error("RabbitMQ Error:", err.message);
-
         });
-
         rabbitChannel = await rabbitConnection.createChannel();
-
         await rabbitChannel.assertExchange(
-
             EXCHANGE_NAME,
-
             "topic",
-
             {
-
                 durable: true
-
             }
-
         );
-
         console.log("RabbitMQ conectado.");
-
     }
-
     catch (err) {
-
-        console.error(
-
-            "No fue posible conectar RabbitMQ:",
-
-            err.message
-
-        );
-
+        console.error("No fue posible conectar RabbitMQ:",err.message);
         setTimeout(connectRabbitMQ, 5000);
-
     }
-
 }
 
 // ==========================================
 // RabbitMQ
 // Publicador Outbox
 // ==========================================
-
 async function publishPendingEvents() {
-
     if (!rabbitChannel || !pool || !dbAvailable)
         return;
-
     const client = await pool.connect();
-
     try {
-
         await client.query("BEGIN");
-
         const result = await client.query(
-
             `
             SELECT *
             FROM outbox_events
@@ -388,13 +265,9 @@ async function publishPendingEvents() {
             LIMIT 20
             FOR UPDATE SKIP LOCKED
             `
-
         );
-
         for (const event of result.rows) {
-
             const message = {
-
                 eventId: event.event_id,
                 eventType: event.event_type,
                 version: event.version,
@@ -402,135 +275,78 @@ async function publishPendingEvents() {
                 correlationId: event.correlation_id,
                 occurredAt: event.occurred_at,
                 payload: event.payload
-
             };
-
             rabbitChannel.publish(
-
                 EXCHANGE_NAME,
-
                 event.event_type,
-
                 Buffer.from(JSON.stringify(message)),
-
                 {
-
                     persistent: true,
                     messageId: event.event_id,
                     correlationId: event.correlation_id,
                     contentType: "application/json"
-
                 }
-
             );
-
             await client.query(
-
                 `
                 UPDATE outbox_events
                 SET published_at = NOW()
                 WHERE id = $1
                 `,
-
                 [event.id]
-
             );
-
             console.log(`Evento publicado: ${event.event_type}`);
-
         }
-
         await client.query("COMMIT");
-
     }
-
     catch (err) {
-
         await client.query("ROLLBACK");
-
         console.error(
-
             "Error publicando eventos:",
-
             err.message
-
         );
-
     }
-
     finally {
-
         client.release();
-
     }
-
 }
 
 // ==========================================
 // RabbitMQ
 // Consumer
 // ==========================================
-
 async function startConsumer() {
-
     if (!rabbitChannel)
         return;
-
     // Crear la cola del Grupo 5
     await rabbitChannel.assertQueue(
-
         QUEUE_NAME,
-
         {
-
             durable: true
-
         }
-
     );
-
-    // Suscribirse únicamente a los eventos necesarios
-
     const routingKeys = [
-
-        "PaymentApproved",
-        "PaymentRejected",
+        "payment.approved",
+        "payment.rejected",
         "InventoryReleased",
         "ShipmentDelivered",
         "ShipmentFailed"
-
     ];
-
     for (const key of routingKeys) {
-
         await rabbitChannel.bindQueue(
-
             QUEUE_NAME,
-
             EXCHANGE_NAME,
-
             key
-
         );
-
     }
-
     rabbitChannel.consume(
-
         QUEUE_NAME,
-
         processMessage,
-
         {
-
             noAck: false
-
         }
-
     );
-
     console.log("Consumer iniciado.");
-
 }
 
 // ==========================================
@@ -539,244 +355,147 @@ async function startConsumer() {
 // ==========================================
 
 async function processMessage(msg) {
-
     if (!msg)
         return;
-
     const event = JSON.parse(
-
         msg.content.toString()
-
     );
-
+    const routingKey = msg.fields.routingKey;
     const eventId = event.eventId;
-
     const eventType = event.eventType;
-
     const producer = event.producer;
 
     const client = await pool.connect();
 
     try {
-
         await client.query("BEGIN");
-
         //---------------------------------------------------
         // Verificar si ya fue procesado
         //---------------------------------------------------
-
         const exists = await client.query(
-
             `
             SELECT 1
             FROM consumed_events
             WHERE event_id = $1
             `,
-
             [
-
                 eventId
-
             ]
-
         );
-
         if (exists.rows.length > 0) {
-
             await client.query("ROLLBACK");
-
             rabbitChannel.ack(msg);
-
             return;
-
         }
-
         //---------------------------------------------------
         // Procesar evento
         //---------------------------------------------------
-
-        switch (eventType) {
-
-            case "PaymentApproved":
-
+        switch (routingKey) {
+            case "payment.approved":
                 console.log("Pago aprobado");
-
                 await client.query(
-
                     `
                     UPDATE orders
                     SET status='PAID',
                         updated_at=NOW()
                     WHERE id=$1
                     `,
-
                     [
-
                         event.payload.orderId
-
                     ]
-
                 );
-
                 break;
-
-            case "PaymentRejected":
-
+            case "payment.rejected":
                 console.log("Pago rechazado");
-
                 await client.query(
-
                     `
                     UPDATE orders
                     SET status='FAILED',
                         updated_at=NOW()
                     WHERE id=$1
                     `,
-
                     [
-
                         event.payload.orderId
-
                     ]
-
                 );
-
                 break;
-
             case "ShipmentDelivered":
-
                 console.log("Pedido entregado");
-
                 await client.query(
-
                     `
                     UPDATE orders
                     SET status='DELIVERED',
                         updated_at=NOW()
                     WHERE id=$1
                     `,
-
                     [
-
                         event.payload.orderId
-
                     ]
-
                 );
-
                 break;
-
             case "ShipmentFailed":
-
                 console.log("Despacho fallido");
-
                 await client.query(
-
                     `
                     UPDATE orders
                     SET status='FAILED',
                         updated_at=NOW()
                     WHERE id=$1
                     `,
-
                     [
-
                         event.payload.orderId
-
                     ]
-
                 );
-
                 break;
-
             case "InventoryReleased":
-
                 console.log("Inventario liberado");
-
                 break;
-
             default:
-
-                console.log(
-
-                    "Evento ignorado:",
-
-                    eventType
-
-                );
-
+                console.log("Evento ignorado:",routingKey);
         }
 
         //---------------------------------------------------
         // Registrar evento consumido
         //---------------------------------------------------
-
         await client.query(
-
             `
             INSERT INTO consumed_events
             (
-
                 event_id,
                 event_type,
                 producer,
                 order_id
-
             )
-
             VALUES
-
             (
-
                 $1,
                 $2,
                 $3,
                 $4
-
             )
             `,
-
             [
-
                 eventId,
                 eventType,
                 producer,
                 event.payload.orderId || null
-
             ]
-
         );
-
         await client.query("COMMIT");
-
         rabbitChannel.ack(msg);
-
     }
-
     catch (err) {
-
         await client.query("ROLLBACK");
-
         console.error(err);
-
         rabbitChannel.nack(
-
             msg,
-
             false,
-
             true
-
         );
-
     }
-
     finally {
-
         client.release();
-
     }
-
 }
 
 // ==========================================
@@ -801,254 +520,168 @@ app.get('/health', async (_req, res) => {
 // ==========================================
 
 app.post("/orders", async (req, res) => {
-
     const authHeader = req.headers["authorization"];
-
     const idempotencyKey =
         req.headers["idempotency-key"];
-
     const correlationId =
         req.headers["x-correlation-id"] || "local";
-
     const now = new Date().toISOString();
-
 
     //---------------------------------------
     // Validar token G2
     //---------------------------------------
-
     const userProfile =
         await validateTokenWithG2(authHeader);
-
     if (!userProfile) {
-
         return res.status(401).json({
-
             timestamp: now,
             status: 401,
             code: "UNAUTHORIZED",
             message: "Token inválido.",
             correlationId
-
         });
-
     }
-
-
     const userId =
         userProfile.business_user_id;
-
     if (!userId) {
-
         return res.status(422).json({
-
             timestamp: now,
             status: 422,
             code: "MISSING_BUSINESS_USER_ID",
             message: "business_user_id inexistente.",
             correlationId
-
         });
-
     }
 
 
     //---------------------------------------
     // Validar body
     //---------------------------------------
-
     const { items } = req.body || {};
-
-    if (
-        !Array.isArray(items) ||
-        items.length === 0
-    ) {
-
+    if (!Array.isArray(items) || items.length === 0) {
         return res.status(400).json({
-
             timestamp: now,
             status: 400,
             code: "INVALID_REQUEST",
             message: "items requerido.",
             correlationId
-
         });
-
     }
-
-
     if (!idempotencyKey) {
-
         return res.status(400).json({
-
             timestamp: now,
             status: 400,
             code: "MISSING_IDEMPOTENCY_KEY",
             message: "Idempotency-Key requerido.",
             correlationId
-
         });
-
     }
-
 
     //---------------------------------------
     // BD disponible
     //---------------------------------------
-
     if (!pool || !dbAvailable) {
-
         return res.status(500).json({
-
             timestamp: now,
             status: 500,
             code: "DATABASE_UNAVAILABLE",
             message: "Base de datos no disponible.",
             correlationId
-
         });
-
     }
-
 
     //---------------------------------------
     // Construir items
     //---------------------------------------
-
     const orderItems = [];
-
     for (const item of items) {
-
         const productId =
             String(item.productId).trim();
-
         const quantity =
             Number(item.quantity);
-
         const unitPrice =
             Number(item.unitPrice);
-
         if (
             !productId ||
             quantity <= 0
         ) {
-
             return res.status(400).json({
-
                 timestamp: now,
                 status: 400,
                 code: "INVALID_ITEM",
                 message: "Producto inválido.",
                 correlationId
-
             });
-
         }
-
         orderItems.push({
-
             productId,
             quantity,
             unitPrice,
             subtotal:
                 quantity * unitPrice
-
         });
-
     }
-
 
     //---------------------------------------
     // Total
     //---------------------------------------
-
     const totalAmount =
         orderItems.reduce(
-
             (sum, item) =>
                 sum + item.subtotal,
-
             0
-
         );
-
 
     //---------------------------------------
     // Número de orden
     //---------------------------------------
-
     const orderNumber =
         `ORD-${Date.now()}`;
-
 
     //---------------------------------------
     // Reservar stock en G7
     //---------------------------------------
-
     let reservation;
-
     try {
-
         reservation =
             await reserveStockWithG7(
-
                 orderNumber,
                 orderItems,
                 idempotencyKey
-
             );
-
         console.log(
             "Reserva creada:",
             reservation
         );
-
     }
-
     catch (err) {
-
         return res.status(
-
             err.status || 500
-
         ).json({
-
             timestamp: now,
             status:
                 err.status || 500,
-
             code:
                 "STOCK_RESERVATION_FAILED",
-
             message:
                 "No fue posible reservar stock.",
-
             details:
                 err.data,
-
             correlationId
-
         });
-
     }
-
     const client =
         await pool.connect();
         
     try {
-
         await client.query("BEGIN");
 
         //--------------------------------------------------
         // Crear orden
         //--------------------------------------------------
-
         let orderUuid;
-
         try {
-
             const orderResult = await client.query(
-
                 `INSERT INTO orders
                 (
                     order_number,
@@ -1059,9 +692,7 @@ app.post("/orders", async (req, res) => {
                     created_at,
                     updated_at
                 )
-
                 VALUES
-
                 (
                     $1,
                     $2,
@@ -1071,68 +702,44 @@ app.post("/orders", async (req, res) => {
                     $5,
                     $5
                 )
-
                 RETURNING id`,
-
                 [
-
                     orderNumber,
                     userId,
                     totalAmount,
                     idempotencyKey,
                     now
-
                 ]
-
             );
-
             orderUuid =
                 orderResult.rows[0].id;
-
         }
-
         catch (dbErr) {
 
             //-----------------------------------------
             // Si falla la BD
             // liberar reserva en G7
             //-----------------------------------------
-
-            await releaseReservationWithG7(
-                orderNumber
-            );
-
+            await releaseReservationWithG7(orderNumber);
             if (dbErr.code === "23505") {
-
                 await client.query("ROLLBACK");
-
                 return res.status(409).json({
-
                     timestamp: now,
                     status: 409,
                     code: "IDEMPOTENCY_CONFLICT",
                     message:
                         "La orden ya existe.",
-
                     correlationId
-
                 });
-
             }
-
             throw dbErr;
-
         }
-
 
         //--------------------------------------------------
         // Historial
         //--------------------------------------------------
-
         await client.query(
-
             `INSERT INTO order_status_history
-
             (
                 order_id,
                 previous_status,
@@ -1140,9 +747,7 @@ app.post("/orders", async (req, res) => {
                 reason,
                 changed_at
             )
-
             VALUES
-
             (
                 $1,
                 NULL,
@@ -1150,27 +755,18 @@ app.post("/orders", async (req, res) => {
                 'Stock reservado correctamente.',
                 $2
             )`,
-
             [
-
                 orderUuid,
                 now
-
             ]
-
         );
-
 
         //--------------------------------------------------
         // Items
         //--------------------------------------------------
-
         for (const item of orderItems) {
-
             await client.query(
-
                 `INSERT INTO order_items
-
                 (
                     order_id,
                     product_id,
@@ -1179,9 +775,7 @@ app.post("/orders", async (req, res) => {
                     subtotal,
                     created_at
                 )
-
                 VALUES
-
                 (
                     $1,
                     $2,
@@ -1190,31 +784,22 @@ app.post("/orders", async (req, res) => {
                     $5,
                     $6
                 )`,
-
                 [
-
                     orderUuid,
                     item.productId,
                     item.quantity,
                     item.unitPrice,
                     item.subtotal,
                     now
-
                 ]
-
             );
-
         }
-
 
         //--------------------------------------------------
         // Outbox
         //--------------------------------------------------
-
         await client.query(
-
             `INSERT INTO outbox_events
-
             (
                 event_type,
                 correlation_id,
@@ -1223,9 +808,7 @@ app.post("/orders", async (req, res) => {
                 occurred_at,
                 created_at
             )
-
             VALUES
-
             (
                 $1,
                 $2,
@@ -1234,120 +817,71 @@ app.post("/orders", async (req, res) => {
                 $5,
                 $5
             )`,
-
             [
-
                 "OrderCreated",
-
                 correlationId,
-
                 orderUuid,
-
                 JSON.stringify({
-
                     orderId: orderUuid,
-
                     orderNumber,
-
                     reservationId:
                         reservation.reservationId,
-
                     userId,
-
                     totalAmount,
-
                     items: orderItems
-
                 }),
-
                 now
-
             ]
-
         );
-
 
         //--------------------------------------------------
         // Commit
         //--------------------------------------------------
-
         await client.query("COMMIT");
-
 
         //--------------------------------------------------
         // Respuesta
         //--------------------------------------------------
-
         return res.status(201).json({
-
             id: orderUuid,
-
             orderNumber,
-
             reservationId:
                 reservation.reservationId,
-
             userId,
-
             status: "STOCK_RESERVED",
-
             totalAmount,
-
             items: orderItems,
-
             createdAt: now,
-
             updatedAt: now
-
         });
-
     }
-
     catch (error) {
 
         //-----------------------------------------
         // Si falla cualquier INSERT
         // liberar reserva
         //-----------------------------------------
-
         try {
-
             await client.query("ROLLBACK");
-
         } catch (_) {}
-
         await releaseReservationWithG7(
             orderNumber
         );
-
         console.error(error);
-
         return res.status(500).json({
-
             timestamp: now,
-
             status: 500,
-
             code: "ORDER_TRANSACTION_FAILED",
-
             message:
                 "No fue posible crear el pedido.",
-
             error:
                 error.message,
-
             correlationId
-
         });
-
     }
-
     finally {
-
         client.release();
-
     }
-
 });
 
 // ==========================================
@@ -1422,7 +956,6 @@ app.get('/orders/:id', async (req, res) => {
 // ==========================================
 // PATCH /orders/:id — Actualizar estado
 // ==========================================
-
 // FSM según contrato OpenAPI (grupo-5-order-service-contract-def.yaml)
 const VALID_TRANSITIONS = {
   CREATED:         ['STOCK_RESERVED', 'CANCELLED', 'FAILED'],
@@ -1435,7 +968,6 @@ const VALID_TRANSITIONS = {
   FAILED:          [],
   DELIVERED:       [],
 };
-
 app.patch('/orders/:id', async (req, res) => {
   if (!pool || !dbAvailable) {
     return res.status(500).json({ error: 'Base de datos no disponible.' });
@@ -1540,69 +1072,43 @@ app.patch('/orders/:id', async (req, res) => {
 // ARRANQUE
 // ==========================================
 const startServer = async () => {
-
     if (dbUrl) {
-
         const poolConfig = await parseDatabaseUrl(dbUrl);
-
         if (poolConfig) {
-
             pool = new Pool(poolConfig);
-
             try {
-
                 await pool.query("SELECT 1");
-
                 dbAvailable = true;
-
                 console.log("Postgres connection OK con Supabase");
-
             } catch (error) {
-
                 dbErrorMessage = error.message;
-
                 console.error("Postgres connection failed:", dbErrorMessage);
-
             }
-
         }
-
     } else {
-
         console.error("No se detectó DATABASE_URL");
-
     }
 
     // ==========================================
     // Conectar RabbitMQ
     // ==========================================
-
     await connectRabbitMQ();
 
     // ==========================================
     // Iniciar Consumer
     // ==========================================
-
     await startConsumer();
 
     // ==========================================
     // Iniciar Publisher
     // ==========================================
-
     setInterval(
-
         publishPendingEvents,
-
         5000
-
     );
-
     app.listen(port, () => {
-
         console.log(`Order service listening on port ${port}`);
-
     });
-
 };
 
 startServer();
