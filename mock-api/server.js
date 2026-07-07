@@ -118,6 +118,18 @@ let dbErrorMessage = null;
 const uuidRegex =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// ==========================================
+// RabbitMQ
+// Variables globales
+// ==========================================
+
+let rabbitConnection = null;
+let rabbitChannel = null;
+
+const EXCHANGE_NAME = "payments.events";
+
+// Cola exclusiva del Grupo 5
+const QUEUE_NAME = "g5-order-service";
 
 // ==========================================
 // G2
@@ -288,6 +300,485 @@ async function confirmReservationWithG7(orderNumber) {
     }
 
 }
+
+// ==========================================
+// RabbitMQ
+// Conexión
+// ==========================================
+
+async function connectRabbitMQ() {
+
+    try {
+
+        rabbitConnection = await amqp.connect(RABBITMQ_URL);
+
+        rabbitConnection.on("close", () => {
+
+            console.log("RabbitMQ desconectado. Reintentando...");
+
+            setTimeout(connectRabbitMQ, 5000);
+
+        });
+
+        rabbitConnection.on("error", (err) => {
+
+            console.error("RabbitMQ Error:", err.message);
+
+        });
+
+        rabbitChannel = await rabbitConnection.createChannel();
+
+        await rabbitChannel.assertExchange(
+
+            EXCHANGE_NAME,
+
+            "topic",
+
+            {
+
+                durable: true
+
+            }
+
+        );
+
+        console.log("RabbitMQ conectado.");
+
+    }
+
+    catch (err) {
+
+        console.error(
+
+            "No fue posible conectar RabbitMQ:",
+
+            err.message
+
+        );
+
+        setTimeout(connectRabbitMQ, 5000);
+
+    }
+
+}
+
+// ==========================================
+// RabbitMQ
+// Publicador Outbox
+// ==========================================
+
+async function publishPendingEvents() {
+
+    if (!rabbitChannel || !pool || !dbAvailable)
+        return;
+
+    const client = await pool.connect();
+
+    try {
+
+        await client.query("BEGIN");
+
+        const result = await client.query(
+
+            `
+            SELECT *
+            FROM outbox_events
+            WHERE published_at IS NULL
+            ORDER BY created_at ASC
+            LIMIT 20
+            FOR UPDATE SKIP LOCKED
+            `
+
+        );
+
+        for (const event of result.rows) {
+
+            const message = {
+
+                eventId: event.event_id,
+                eventType: event.event_type,
+                version: event.version,
+                producer: event.producer,
+                correlationId: event.correlation_id,
+                occurredAt: event.occurred_at,
+                payload: event.payload
+
+            };
+
+            rabbitChannel.publish(
+
+                EXCHANGE_NAME,
+
+                event.event_type,
+
+                Buffer.from(JSON.stringify(message)),
+
+                {
+
+                    persistent: true,
+                    messageId: event.event_id,
+                    correlationId: event.correlation_id,
+                    contentType: "application/json"
+
+                }
+
+            );
+
+            await client.query(
+
+                `
+                UPDATE outbox_events
+                SET published_at = NOW()
+                WHERE id = $1
+                `,
+
+                [event.id]
+
+            );
+
+            console.log(`Evento publicado: ${event.event_type}`);
+
+        }
+
+        await client.query("COMMIT");
+
+    }
+
+    catch (err) {
+
+        await client.query("ROLLBACK");
+
+        console.error(
+
+            "Error publicando eventos:",
+
+            err.message
+
+        );
+
+    }
+
+    finally {
+
+        client.release();
+
+    }
+
+}
+
+// ==========================================
+// RabbitMQ
+// Consumer
+// ==========================================
+
+async function startConsumer() {
+
+    if (!rabbitChannel)
+        return;
+
+    // Crear la cola del Grupo 5
+    await rabbitChannel.assertQueue(
+
+        QUEUE_NAME,
+
+        {
+
+            durable: true
+
+        }
+
+    );
+
+    // Suscribirse únicamente a los eventos necesarios
+
+    const routingKeys = [
+
+        "PaymentApproved",
+        "PaymentRejected",
+        "InventoryReleased",
+        "ShipmentDelivered",
+        "ShipmentFailed"
+
+    ];
+
+    for (const key of routingKeys) {
+
+        await rabbitChannel.bindQueue(
+
+            QUEUE_NAME,
+
+            EXCHANGE_NAME,
+
+            key
+
+        );
+
+    }
+
+    rabbitChannel.consume(
+
+        QUEUE_NAME,
+
+        processMessage,
+
+        {
+
+            noAck: false
+
+        }
+
+    );
+
+    console.log("Consumer iniciado.");
+
+}
+
+// ==========================================
+// RabbitMQ
+// Procesamiento de mensajes
+// ==========================================
+
+async function processMessage(msg) {
+
+    if (!msg)
+        return;
+
+    const event = JSON.parse(
+
+        msg.content.toString()
+
+    );
+
+    const eventId = event.eventId;
+
+    const eventType = event.eventType;
+
+    const producer = event.producer;
+
+    const client = await pool.connect();
+
+    try {
+
+        await client.query("BEGIN");
+
+        //---------------------------------------------------
+        // Verificar si ya fue procesado
+        //---------------------------------------------------
+
+        const exists = await client.query(
+
+            `
+            SELECT 1
+            FROM consumed_events
+            WHERE event_id = $1
+            `,
+
+            [
+
+                eventId
+
+            ]
+
+        );
+
+        if (exists.rows.length > 0) {
+
+            await client.query("ROLLBACK");
+
+            rabbitChannel.ack(msg);
+
+            return;
+
+        }
+
+        //---------------------------------------------------
+        // Procesar evento
+        //---------------------------------------------------
+
+        switch (eventType) {
+
+            case "PaymentApproved":
+
+                console.log("Pago aprobado");
+
+                await client.query(
+
+                    `
+                    UPDATE orders
+                    SET status='PAID',
+                        updated_at=NOW()
+                    WHERE id=$1
+                    `,
+
+                    [
+
+                        event.payload.orderId
+
+                    ]
+
+                );
+
+                break;
+
+            case "PaymentRejected":
+
+                console.log("Pago rechazado");
+
+                await client.query(
+
+                    `
+                    UPDATE orders
+                    SET status='FAILED',
+                        updated_at=NOW()
+                    WHERE id=$1
+                    `,
+
+                    [
+
+                        event.payload.orderId
+
+                    ]
+
+                );
+
+                break;
+
+            case "ShipmentDelivered":
+
+                console.log("Pedido entregado");
+
+                await client.query(
+
+                    `
+                    UPDATE orders
+                    SET status='DELIVERED',
+                        updated_at=NOW()
+                    WHERE id=$1
+                    `,
+
+                    [
+
+                        event.payload.orderId
+
+                    ]
+
+                );
+
+                break;
+
+            case "ShipmentFailed":
+
+                console.log("Despacho fallido");
+
+                await client.query(
+
+                    `
+                    UPDATE orders
+                    SET status='FAILED',
+                        updated_at=NOW()
+                    WHERE id=$1
+                    `,
+
+                    [
+
+                        event.payload.orderId
+
+                    ]
+
+                );
+
+                break;
+
+            case "InventoryReleased":
+
+                console.log("Inventario liberado");
+
+                break;
+
+            default:
+
+                console.log(
+
+                    "Evento ignorado:",
+
+                    eventType
+
+                );
+
+        }
+
+        //---------------------------------------------------
+        // Registrar evento consumido
+        //---------------------------------------------------
+
+        await client.query(
+
+            `
+            INSERT INTO consumed_events
+            (
+
+                event_id,
+                event_type,
+                producer,
+                order_id
+
+            )
+
+            VALUES
+
+            (
+
+                $1,
+                $2,
+                $3,
+                $4
+
+            )
+            `,
+
+            [
+
+                eventId,
+                eventType,
+                producer,
+                event.payload.orderId || null
+
+            ]
+
+        );
+
+        await client.query("COMMIT");
+
+        rabbitChannel.ack(msg);
+
+    }
+
+    catch (err) {
+
+        await client.query("ROLLBACK");
+
+        console.error(err);
+
+        rabbitChannel.nack(
+
+            msg,
+
+            false,
+
+            true
+
+        );
+
+    }
+
+    finally {
+
+        client.release();
+
+    }
+
+}
+
 // ==========================================
 // ENDPOINT: HEALTH CHECK
 // ==========================================
@@ -1049,25 +1540,69 @@ app.patch('/orders/:id', async (req, res) => {
 // ARRANQUE
 // ==========================================
 const startServer = async () => {
-  if (dbUrl) {
-    const poolConfig = await parseDatabaseUrl(dbUrl);
-    if (poolConfig) {
-      pool = new Pool(poolConfig);
-      try {
-        await pool.query('SELECT 1');
-        dbAvailable = true;
-        console.log('Postgres connection OK con Supabase');
-      } catch (error) {
-        dbErrorMessage = error.message;
-        console.error('Postgres connection failed:', dbErrorMessage);
-      }
+
+    if (dbUrl) {
+
+        const poolConfig = await parseDatabaseUrl(dbUrl);
+
+        if (poolConfig) {
+
+            pool = new Pool(poolConfig);
+
+            try {
+
+                await pool.query("SELECT 1");
+
+                dbAvailable = true;
+
+                console.log("Postgres connection OK con Supabase");
+
+            } catch (error) {
+
+                dbErrorMessage = error.message;
+
+                console.error("Postgres connection failed:", dbErrorMessage);
+
+            }
+
+        }
+
+    } else {
+
+        console.error("No se detectó DATABASE_URL");
+
     }
-  } else {
-    console.error('No se detectó DATABASE_URL');
-  }
-  app.listen(port, () => {
-    console.log(`Order service listening on port ${port}`);
-  });
+
+    // ==========================================
+    // Conectar RabbitMQ
+    // ==========================================
+
+    await connectRabbitMQ();
+
+    // ==========================================
+    // Iniciar Consumer
+    // ==========================================
+
+    await startConsumer();
+
+    // ==========================================
+    // Iniciar Publisher
+    // ==========================================
+
+    setInterval(
+
+        publishPendingEvents,
+
+        5000
+
+    );
+
+    app.listen(port, () => {
+
+        console.log(`Order service listening on port ${port}`);
+
+    });
+
 };
 
 startServer();
