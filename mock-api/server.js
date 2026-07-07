@@ -17,7 +17,10 @@ const port = Number(process.env.PORT || 3000);
 app.use(cors());
 app.use(express.json());
 
-const G2_BASE_URL = process.env.G2_BASE_URL || 'https://auth-minimarket-cloud.onrender.com'; // Integración con el grupo 2
+const G2_BASE_URL = process.env.G2_BASE_URL || 'https://auth-minimarket-cloud.onrender.com'; // Integración con el grupo 2.
+const G6_BASE_URL = process.env.G6_BASE_URL || 'https://payment-service-g6-1.onrender.com'; // Integración con el grupo 6.
+const G7_BASE_URL = process.env.G7_BASE_URL || 'https://inventario-g7.onrender.com'; // Integración con el grupo 7.
+const G8_BASE_URL = process.env.G8_BASE_URL || 'https://arq-microservicio-de-despacho-y-logistica.onrender.com'; // Integración con el grupo 8.
 
 // ==========================================
 // CONFIGURACIÓN Y PARSEO DE BASE DE DATOS
