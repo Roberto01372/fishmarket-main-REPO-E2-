@@ -456,11 +456,27 @@ app.patch('/orders/:id', async (req, res) => {
       'INSERT INTO order_status_history (order_id, previous_status, new_status, reason, changed_at) VALUES ($1, $2, $3, $4, $5)',
       [orderId, previousStatus, newStatus, reason || 'Actualización de estado.', now]
     );
+
+    // --- Logica dinamica para evento ---
+    let eventType = 'OrderStatusChanged'; // Evento genérico por defecto
+    
+    if (newStatus === 'READY_TO_SHIP') {
+      eventType = 'ReadyToShip'; 
+    } else if (newStatus === 'PAID') {
+      eventType = 'PaymentApproved';
+    } else if (newStatus === 'FAILED') {
+      eventType = 'OrderFailed';
+    } else if (newStatus === 'CANCELLED') {
+      eventType = 'OrderCancelled';
+    }
+
+    // Insertar en la tabla outbox_events usando la nueva variable eventType
     await client.query(
       'INSERT INTO outbox_events (event_type, correlation_id, aggregate_id, payload, occurred_at, created_at) VALUES ($1, $2, $3, $4, $5, $5)',
-      ['OrderStatusChanged', correlationId, orderId,
+      [eventType, correlationId, orderId,
        JSON.stringify({ orderId, orderNumber, userId, previousStatus, newStatus, reason }), now]
     );
+    // --- fin logica dinamica---
 
     if (newStatus === 'PAYMENT_PENDING') {
       const totalAmount = Number(updatedResult.rows[0].total_amount);
