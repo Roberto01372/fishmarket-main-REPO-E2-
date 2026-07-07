@@ -391,6 +391,20 @@ app.get('/orders/:id', async (req, res) => {
 // ==========================================
 // PATCH /orders/:id — Actualizar estado
 // ==========================================
+
+// FSM según contrato OpenAPI (grupo-5-order-service-contract-def.yaml)
+const VALID_TRANSITIONS = {
+  CREATED:         ['STOCK_RESERVED', 'CANCELLED', 'FAILED'],
+  STOCK_RESERVED:  ['PAYMENT_PENDING'],
+  PAYMENT_PENDING: ['PAID', 'CANCELLED', 'FAILED'],
+  PAID:            ['READY_TO_SHIP'],
+  READY_TO_SHIP:   ['SHIPPED'],
+  SHIPPED:         ['DELIVERED', 'FAILED'],
+  CANCELLED:       [],
+  FAILED:          [],
+  DELIVERED:       [],
+};
+
 app.patch('/orders/:id', async (req, res) => {
   if (!pool || !dbAvailable) {
     return res.status(500).json({ error: 'Base de datos no disponible.' });
@@ -420,20 +434,43 @@ app.patch('/orders/:id', async (req, res) => {
     const previousStatus = currentResult.rows[0].status;
     const orderNumber = currentResult.rows[0].order_number;
     const userId = currentResult.rows[0].user_id;
+    const newStatus = status.toUpperCase();
+
+    const allowedTargets = VALID_TRANSITIONS[previousStatus] ?? [];
+    if (!allowedTargets.includes(newStatus)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        timestamp: now,
+        status: 400,
+        code: 'INVALID_STATUS_TRANSITION',
+        message: `Transición inválida: ${previousStatus} → ${newStatus}. Estados permitidos desde ${previousStatus}: [${allowedTargets.join(', ') || 'ninguno'}].`,
+        correlationId
+      });
+    }
 
     const updatedResult = await client.query(
       'UPDATE orders SET status = $1, updated_at = $2 WHERE id = $3 RETURNING *',
-      [status.toUpperCase(), now, orderId]
+      [newStatus, now, orderId]
     );
     await client.query(
       'INSERT INTO order_status_history (order_id, previous_status, new_status, reason, changed_at) VALUES ($1, $2, $3, $4, $5)',
-      [orderId, previousStatus, status.toUpperCase(), reason || 'Actualización de estado.', now]
+      [orderId, previousStatus, newStatus, reason || 'Actualización de estado.', now]
     );
     await client.query(
       'INSERT INTO outbox_events (event_type, correlation_id, aggregate_id, payload, occurred_at, created_at) VALUES ($1, $2, $3, $4, $5, $5)',
       ['OrderStatusChanged', correlationId, orderId,
-       JSON.stringify({ orderId, orderNumber, userId, previousStatus, newStatus: status.toUpperCase(), reason }), now]
+       JSON.stringify({ orderId, orderNumber, userId, previousStatus, newStatus, reason }), now]
     );
+
+    if (newStatus === 'PAYMENT_PENDING') {
+      const totalAmount = Number(updatedResult.rows[0].total_amount);
+      await client.query(
+        'INSERT INTO outbox_events (event_type, correlation_id, aggregate_id, payload, occurred_at, created_at) VALUES ($1, $2, $3, $4, $5, $5)',
+        ['PaymentPending', correlationId, orderId,
+         JSON.stringify({ orderId, orderNumber, userId, totalAmount }), now]
+      );
+    }
+
     await client.query('COMMIT');
 
     return res.json({
@@ -441,7 +478,7 @@ app.patch('/orders/:id', async (req, res) => {
       orderId: updatedResult.rows[0].id,
       orderNumber: updatedResult.rows[0].order_number,
       previousStatus,
-      newStatus: updatedResult.rows[0].status,
+      newStatus,
       updatedAt: updatedResult.rows[0].updated_at
     });
   } catch (error) {
