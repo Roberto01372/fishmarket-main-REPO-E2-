@@ -1,186 +1,123 @@
-# Mini Marketplace — Documentación de equipos
+# Order Service - Grupo 5
 
-Aplicación fullstack de marketplace construida en arquitectura de microservicios. Cada grupo es responsable de un servicio o del frontend. Este documento explica cómo debe trabajar cada equipo dentro de su carpeta.
-
----
-
-## Mapa de grupos
-
-| Grupo | Carpeta | Responsabilidad | Puerto |
-|---|---|---|---|
-| G1 | `frontend/` | Interfaz de usuario (React + Vite) | 5173 |
-| G2 ★ | `services/identidad/` | Autenticación y gestión de usuarios | 3001 |
-| G3 | `services/catalogo/` | Catálogo de productos | 3002 |
-| G4 | `services/carro/` | Carrito de compras | 3003 |
-| G5 | `services/pedidos/` | Gestión de órdenes | 3004 |
-| G6 | `services/pagos/` | Procesamiento de pagos | 3005 |
-| G7 | `services/inventario/` | Control de stock | 3006 |
-| G8 | `services/despacho/` | Envíos y despacho | 3007 |
-| G9 | `services/notificaciones/` | Notificaciones (email / push) | 3008 |
-| G10 | `services/reporteria/` | Reportes y analíticas | 3009 |
-| G11 | `services/chatbot/` | Chatbot de soporte al cliente | 3010 |
-
-> ★ El servicio `identidad` es la referencia de estructura. Si no saben cómo organizar su servicio, mírenlo a él.
+Este repositorio corresponde al microservicio de pedidos del Grupo 5 dentro de una arquitectura de microservicios del marketplace. El servicio se encarga de gestionar el ciclo de vida de las órdenes, incluyendo creación, consulta, actualización de estado y coordinación con otros servicios del sistema.
 
 ---
 
-## Estructura general del proyecto
+## Propósito del servicio
 
-```
-mini-marketplace/
-├── frontend/
-├── services/
-│   ├── identidad/
-│   ├── catalogo/
-│   ├── carro/
-│   ├── pedidos/
-│   ├── pagos/
-│   ├── inventario/
-│   ├── despacho/
-│   ├── notificaciones/
-│   ├── reporteria/
-│   └── chatbot/
-└── docker-compose.yml
-```
+El Order Service tiene como responsabilidad central administrar pedidos en nombre del cliente. Su flujo principal incluye:
+
+- Crear una orden a partir de los productos solicitados.
+- Validar que el usuario esté autenticado.
+- Reservar stock en el servicio de inventario.
+- Escuchar eventos de pago y despacho.
+- Actualizar el estado de la orden conforme avanza el proceso.
 
 ---
 
-## Estructura estándar de un servicio (Node.js + TypeScript)
+## Arquitectura
 
-Todos los servicios de backend deben seguir esta estructura. Tomen como referencia `services/identidad/`:
+El servicio está construido con Node.js y Express, y utiliza:
 
-```
-services/<nombre>/
-├── src/
-│   ├── index.ts              # Entry point — crea el servidor y lo arranca
-│   ├── config/
-│   │   └── supabase.ts       # Cliente de Supabase u otra config global
-│   ├── routes/
-│   │   └── <nombre>.routes.ts   # Define las rutas del servicio
-│   ├── controllers/
-│   │   └── <nombre>.controller.ts  # Lógica de cada endpoint
-│   └── middlewares/
-│       └── auth.middleware.ts   # Validación de JWT u otros guards
-├── .env                      # Variables locales (NO commitear)
-├── .env.example              # Plantilla de variables (SÍ commitear)
-├── package.json
-├── tsconfig.json
-├── Dockerfile
-└── .gitignore
-```
+- PostgreSQL para persistir órdenes, ítems, historial y eventos.
+- RabbitMQ para la comunicación asíncrona con otros microservicios.
+- Axios para integraciones síncronas vía HTTP.
 
-### Qué va en cada archivo
+---
 
-| Archivo | Qué debe tener |
-|---|---|
-| `index.ts` | Crear app Express, registrar middlewares globales (cors, json), montar rutas, llamar a `app.listen()` |
-| `config/supabase.ts` | Inicializar y exportar el cliente de Supabase |
-| `routes/*.routes.ts` | Solo definir rutas: `router.get('/ruta', controller.metodo)` |
-| `controllers/*.controller.ts` | Lógica de negocio de cada endpoint: recibir request, procesar, responder |
-| `middlewares/auth.middleware.ts` | Verificar JWT antes de pasar al controller |
+## Integraciones con otros grupos
+
+### Grupo 2 - Autenticación
+
+Antes de crear una orden, el servicio valida el token del usuario mediante una llamada al endpoint de autenticación del Grupo 2.
+
+- Endpoint usado: `/auth/validate`
+- Se obtiene el `business_user_id` para asociarlo a la orden.
+
+### Grupo 7 - Inventario
+
+Cuando se crea una orden, el servicio contacta al Grupo 7 para reservar stock.
+
+- Reserva de stock: `/inventory/reserve`
+- Liberación de reserva: `/inventory/release`
+- Confirmación de reserva: `/inventory/confirm`
+
+### Grupo 6 - Pagos
+
+El servicio no depende de pagos de forma síncrona, sino que reacciona a eventos provenientes del Grupo 6 mediante RabbitMQ.
+
+- Si el pago es aprobado, la orden pasa a `PAID`.
+- Si el pago es rechazado, la orden pasa a `FAILED`.
+
+### Grupo 8 - Despacho
+
+El servicio también escucha eventos del Grupo 8 para actualizar el estado final del pedido.
+
+- Si el pedido se entrega, pasa a `DELIVERED`.
+- Si hay un fallo en el despacho, pasa a `FAILED`.
+
+---
+
+## RabbitMQ
+
+RabbitMQ se usa para la integración asíncrona entre servicios.
+
+### Función del servicio en RabbitMQ
+
+- Publica eventos desde la tabla `outbox_events`.
+- Consume eventos desde una cola dedicada llamada `g5-order-service`.
+- Procesa mensajes relacionados con pagos y despacho.
+
+### Patrón Outbox
+
+El servicio implementa un patrón Outbox para asegurar que los eventos de negocio se registren en la base de datos antes de publicarse en RabbitMQ, reduciendo inconsistencias entre servicios.
+
+---
+
+## Endpoints principales
+
+### Salud del servicio
+
+- `GET /health`: verifica si el servicio y la base de datos están funcionando.
+
+### Gestión de pedidos
+
+- `POST /orders`: crea una orden.
+- `GET /orders`: lista órdenes paginadas por usuario.
+- `GET /orders/:id`: obtiene una orden específica.
+- `PATCH /orders/:id`: actualiza el estado de una orden.
 
 ---
 
 ## Variables de entorno
 
-Cada servicio tiene su propio `.env`. Copiar el ejemplo y completar:
-
-```bash
-cp services/<nombre>/.env.example services/<nombre>/.env
-```
-
-Plantilla mínima para cualquier servicio backend:
+El servicio requiere variables como:
 
 ```env
-PORT=30XX                        # Ver tabla de puertos arriba
-SUPABASE_URL=
-SUPABASE_ANON_KEY=
-SUPABASE_SERVICE_ROLE_KEY=
+PORT=3000
+DATABASE_URL=...
+RABBITMQ_URL=...
+G2_BASE_URL=...
+G7_BASE_URL=...
+G6_BASE_URL=...
+G8_BASE_URL=...
 ```
-
-**Nunca committear el `.env` con valores reales.** El `.env.example` con las claves vacías sí va al repositorio.
 
 ---
 
-## Cómo levantar un servicio en desarrollo
+## Ejecución local
 
 ```bash
-cd services/<nombre>
+cd mock-api
 npm install
-npx tsx src/index.ts
+npm start
 ```
 
-Con Docker:
-
-```bash
-cd services/<nombre>
-docker build -t marketplace-<nombre> .
-docker run -p 30XX:30XX --env-file .env marketplace-<nombre>
-```
-
-Para levantar todo el sistema junto:
-
-```bash
-docker-compose up
-```
+El servicio quedará disponible en el puerto configurado por `PORT`.
 
 ---
 
-## Frontend (G1)
+## Resumen
 
-**Carpeta:** `frontend/`  
-**Stack:** React 19 + Vite 8 + Supabase JS
-
-```bash
-cd frontend
-npm install
-npm run dev        # dev server en http://localhost:5173
-npm run build      # build de producción
-```
-
-El frontend consume los servicios de backend vía HTTP. Cada servicio expone su propio endpoint.
-
-**Variables de entorno** (`frontend/.env.local`):
-
-```env
-VITE_SUPABASE_URL=
-VITE_SUPABASE_ANON_KEY=
-VITE_API_IDENTIDAD=http://localhost:3001
-VITE_API_CATALOGO=http://localhost:3002
-# ... agregar los demás según necesiten
-```
-
----
-
-## Git — reglas básicas
-
-1. **Nunca trabajar directo en `main`.** Crear siempre una rama propia.
-2. **Cada grupo trabaja solo en su carpeta.** No tocar carpetas de otros grupos.
-3. Nombrar las ramas con el prefijo del tipo de cambio:
-
-```bash
-git checkout -b feat/login-con-supabase
-git checkout -b fix/error-stock-negativo
-git checkout -b docs/actualizar-readme
-```
-
-4. Hacer commits pequeños y descriptivos:
-
-```bash
-git commit -m "feat: agregar endpoint POST /auth/login"
-git commit -m "fix: validar que el stock no quede negativo"
-```
-
-5. Para incorporar cambios a `main`, abrir un **Pull Request** en GitHub y pedir revisión. Ver [`CONTRIBUTING.md`](CONTRIBUTING.md) para el flujo completo.
-
----
-
-## Stack común (servicios backend)
-
-| Herramienta | Versión |
-|---|---|
-| Node.js | 20 LTS |
-| TypeScript | 6 |
-| Express | 5 |
-| Supabase JS | 2 |
-| tsx (dev runner) | última |
+Este repositorio representa el microservicio de pedidos del Grupo 5. Su rol es coordinar la creación y evolución de las órdenes, integrándose con autenticación, inventario, pagos y despacho mediante HTTP y RabbitMQ.
