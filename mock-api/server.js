@@ -450,7 +450,7 @@ async function processMessage(msg) {
                         previous_status,
                         new_status,
                         reason,
-                        changet_at
+                        changed_at
                     )
                     VALUES
                     (
@@ -485,7 +485,7 @@ async function processMessage(msg) {
                         previous_status,
                         new_status,
                         reason,
-                        changet_at
+                        changed_at
                     )
                     VALUES
                     (
@@ -520,7 +520,7 @@ async function processMessage(msg) {
                         previous_status,
                         new_status,
                         reason,
-                        changet_at
+                        changed_at
                     )
                     VALUES
                     (
@@ -557,7 +557,7 @@ async function processMessage(msg) {
                         previous_status,
                         new_status,
                         reason,
-                        changet_at
+                        changed_at
                     )
                     VALUES
                     (
