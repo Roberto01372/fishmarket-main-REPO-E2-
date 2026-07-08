@@ -823,7 +823,7 @@ app.post("/orders", async (req, res) => {
                     $1,
                     $2,
                     $3,
-                    'STOCK_RESERVED',
+                    'CREATED',
                     $4,
                     $5,
                     $5
@@ -837,11 +837,9 @@ app.post("/orders", async (req, res) => {
                     now
                 ]
             );
-            orderUuid =
-                orderResult.rows[0].id;
+            orderUuid = orderResult.rows[0].id;
         }
         catch (dbErr) {
-
             //-----------------------------------------
             // Si falla la BD
             // liberar reserva en G7
@@ -860,7 +858,6 @@ app.post("/orders", async (req, res) => {
             }
             throw dbErr;
         }
-
         //--------------------------------------------------
         // Historial
         //--------------------------------------------------
@@ -877,8 +874,8 @@ app.post("/orders", async (req, res) => {
             (
                 $1,
                 NULL,
-                'STOCK_RESERVED',
-                'Stock reservado correctamente.',
+                'Created',
+                'Pedido inicializado en el sistema.',
                 $2
             )`,
             [
@@ -886,7 +883,40 @@ app.post("/orders", async (req, res) => {
                 now
             ]
         );
-
+        await client.query(
+            `
+            UPDATE orders 
+            SET status = 'STOCK_RESERVED', 
+                updated_at = $1 
+            WHERE id = $2
+            `,
+            [
+                now, orderUuid
+            ]
+        );
+        await client.query(
+            `
+            INSERT INTO order_status_history
+            (
+                order_id,
+                previous_status,
+                new_status,
+                reason,
+                changed_at
+            )
+            VALUES
+            (
+                $1,
+                'CREATED', 
+                'STOCK_RESERVED',
+                'Stock reservado correctamente en G7.',
+                $2
+            )
+            `,
+            [
+                orderUuid, now
+            ]
+        );
         //--------------------------------------------------
         // Items
         //--------------------------------------------------
