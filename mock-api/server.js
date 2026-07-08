@@ -1068,7 +1068,7 @@ app.patch('/orders/:id', async (req, res) => {
       const totalAmount = Number(updatedResult.rows[0].total_amount);
       await client.query(
         'INSERT INTO outbox_events (event_type, correlation_id, aggregate_id, payload, occurred_at, created_at) VALUES ($1, $2, $3, $4, $5, $5)',
-        ['PaymentPending', correlationId, orderId,
+        ['payment.pending', correlationId, orderId,
          JSON.stringify({ orderId, orderNumber, userId, totalAmount }), now]
       );
     }
