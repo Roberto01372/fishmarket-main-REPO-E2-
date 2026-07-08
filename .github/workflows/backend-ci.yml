@@ -1,0 +1,32 @@
+name: Backend CI (Order Service)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test-and-verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar código del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-node: '24.14.1'
+          cache: 'npm'
+
+      - name: Instalar Dependencias
+        run: npm install
+
+      - name: Validar Sintaxis (Linter)
+        run: |
+          # Si tienes instalado eslint o herramientas de análisis, se corren aquí
+          node --check server.js 
+
+      # - name: Ejecutar Pruebas Unitarias
+      #   run: npm test # Descomenta esto cuando agregues tus archivos de prueba (.test.js)

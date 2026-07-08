@@ -1,0 +1,21 @@
+name: Frontend CD (Vercel Deploy)
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'index.html' # Solo se activa si modificas el frontend
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+
+      - name: Desplegar a Vercel
+        uses: amondnet/vercel-action@v20
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          vercel-args: '--prod' 
