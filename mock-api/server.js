@@ -41,7 +41,7 @@ const G2_BASE_URL =
 
 const G6_BASE_URL =
     process.env.G6_BASE_URL ||
-    "https://payment-service-g6-1.onrender.com";
+    "https://payment-service-g6-1.onrender.com/payments";
 
 const G7_BASE_URL =
     process.env.G7_BASE_URL ||
