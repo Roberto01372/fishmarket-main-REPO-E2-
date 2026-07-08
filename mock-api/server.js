@@ -404,6 +404,29 @@ async function processMessage(msg) {
                         event.payload.orderId
                     ]
                 );
+                await client.query(
+                    `
+                    INSERT INTO order_status_history
+                    (
+                        order_id,
+                        previous_status,
+                        new_status,
+                        reason,
+                        changed_at
+                    )
+                    VALUES
+                    (
+                        $1,
+                        'PAYMENT_PENDING',
+                        'PAID',
+                        'Pago aprobado por Grupo 6.',
+                        NOW()
+                    )
+                    `,
+                    [
+                    event.payload.orderId
+                    ]
+                );
                 break;
             case "payment.rejected":
                 console.log("Pago rechazado");
