@@ -1,0 +1,14 @@
+INSERT INTO inventario.inventory (product_id, available_stock, reserved_stock, version)
+VALUES
+    ('0e319c09-7aa8-4162-b0dd-7f8e6f5a610a', 15, 0, 1), -- Cana Shimano Sedona 2.10m
+    ('1398de9b-c483-4ad1-805a-619e78453963', 22, 0, 1), -- Cana Daiwa Exceler 1.80m
+    ('b33e919f-4f5c-4921-b552-fbe8a5c9f0ee',  8, 0, 1), -- Carrete Penn Battle III 3000
+    ('89d2d1f4-b7de-4734-8e24-f6169c8c2a8a', 30, 0, 1), -- Carrete Shimano Sienna 2500
+    ('24d57656-0416-4cb1-80e2-475574ac3234', 42, 0, 1), -- Senuelo Rapala X-Rap 10cm
+    ('6e334f56-66c4-4e2c-8e0b-e0f981d3c80a', 60, 0, 1), -- Linea Berkley Trilene XL 0.30mm
+    ('90cbdee2-a51e-43e5-acb6-dd4ff75ac9fc', 12, 0, 1), -- Carrete Daiwa Revros LT 2500
+    ('ae9067e3-069d-4af4-b4ad-ddfaf555fc32', 35, 0, 1), -- Senuelo Yo-Zuri Crystal Minnow
+    ('25833647-f602-487e-b136-d8fac6a641f7', 40, 0, 1), -- Senuelo Storm Gomoku
+    ('a22fccb5-d3e4-4e4e-82da-2a46c1188826', 28, 0, 1), -- Linea PowerPro Trenzada 20lb
+    ('1f55c15e-2b28-4228-8cba-93014823e81d', 85, 0, 1), -- Anzuelos Mustad 2/0
+    ('050a226a-a892-4689-82c2-98f4be6b66bb', 18, 0, 1)  -- Cana Okuma Celilo 2.40m
