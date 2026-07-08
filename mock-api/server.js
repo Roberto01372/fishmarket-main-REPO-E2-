@@ -329,6 +329,7 @@ async function startConsumer() {
         "payment.approved",
         "payment.rejected",
         "InventoryReleased",
+        "ShipmentCreated",
         "ShipmentDelivered",
         "ShipmentFailed"
     ];
@@ -441,6 +442,62 @@ async function processMessage(msg) {
                         event.payload.orderId
                     ]
                 );
+                await client.query(
+                    `
+                    INSERT INTO order_status_history
+                    (
+                        order_id,
+                        previous_status,
+                        new_status,
+                        reason,
+                        changet_at
+                    )
+                    VALUES
+                    (
+                        $1,
+                        'PAYMENT_PENDING',
+                        'FAILED',
+                        'Pago rechazado por Grupo 6.',
+                        NOW()
+                    )
+                    `,
+                    [
+                        event.payload.orderId
+                    ]
+                );
+                break;
+            case "ShipmentCreated":
+                console.log("Despacho creado");
+                await client.query(
+                    `
+                    UPDATE orders
+                    SET status='SHIPPED',
+                        updated_at=NOW()
+                    WHERE id = $1
+                    `,
+                    [event.payload.orderId]
+                );
+                await client.query(
+                    `
+                    INSERT INTO order_status_history
+                    (
+                        order_id,
+                        previous_status,
+                        new_status,
+                        reason,
+                        changet_at
+                    )
+                    VALUES
+                    (
+                        $1,
+                        'READY_TO_SHIP',
+                        'SHIPPED',
+                        'Despacho creado por Grupo 8.',
+                        NOW()
+                    )
+                    `,
+                    [event.payload.orderId]
+                );
                 break;
             case "ShipmentDelivered":
                 console.log("Pedido entregado");
@@ -455,6 +512,29 @@ async function processMessage(msg) {
                         event.payload.orderId
                     ]
                 );
+                await client.query(
+                    `
+                    INSERT INTO order_status_history
+                    (
+                        order_id,
+                        previous_status,
+                        new_status,
+                        reason,
+                        changet_at
+                    )
+                    VALUES
+                    (
+                        $1,
+                        'SHIPPED',
+                        'DELIVERED',
+                        'Pedido entregado por Grupo 8.',
+                        NOW()
+                    )
+                    `,
+                    [
+                        event.payload.orderId
+                    ]
+                );
                 break;
             case "ShipmentFailed":
                 console.log("Despacho fallido");
@@ -464,6 +544,29 @@ async function processMessage(msg) {
                     SET status='FAILED',
                         updated_at=NOW()
                     WHERE id=$1
+                    `,
+                    [
+                        event.payload.orderId
+                    ]
+                );
+                await client.query(
+                    `
+                    INSERT INTO order_status_history
+                    (
+                        order_id,
+                        previous_status,
+                        new_status,
+                        reason,
+                        changet_at
+                    )
+                    VALUES
+                    (
+                        $1,
+                        'SHIPPED',
+                        'FAILED',
+                        'Despacho fallido informado por Grupo 8.',
+                        NOW()
+                    )
                     `,
                     [
                         event.payload.orderId
