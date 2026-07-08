@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main, master ]
 
+defaults:
+  run:
+    working-directory: mock-api
+
 jobs:
   test-and-verify:
     runs-on: ubuntu-latest
@@ -18,15 +22,20 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
 
       - name: Instalar Dependencias
-        run: npm install
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
 
       - name: Validar Sintaxis (Linter)
         run: |
-          # Si tienes instalado eslint o herramientas de análisis, se corren aquí
-          node --check server.js 
-
-      # - name: Ejecutar Pruebas Unitarias
-      #   run: npm test # Descomenta esto cuando agregues tus archivos de prueba (.test.js)
+          if [ -f server.js ]; then
+            node --check server.js
+          else
+            echo "No se encontró server.js dentro de mock-api"
+            exit 1
+          fi
