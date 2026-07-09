@@ -498,6 +498,36 @@ async function processMessage(msg) {
                     `,
                     [event.payload.orderId]
                 );
+                await client.query(
+                    `
+                    INSERT INTO outbox_events
+                    (
+                        event_type,
+                        correlation_id,
+                        aggregate_id,
+                        payload,
+                        occurred_at,
+                        created_at
+                    )
+                    VALUES
+                    (
+                        $1,
+                        $2,
+                        $3,
+                        $4,
+                        NOW(),
+                        NOW()
+                    )
+                    `,
+                    [
+                        "Shipped",
+                        event.correlationId,
+                        event.payload.orderId,
+                        JSON.stringify({
+                            orderId: event.payload.orderId
+                        })
+                    ]
+                );
                 break;
             case "ShipmentDelivered":
                 console.log("Pedido entregado");
