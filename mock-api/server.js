@@ -531,7 +531,7 @@ async function processMessage(msg) {
                     )
                     `,
                     [
-                        "Shipped",
+                        "Shipped.created",
                         event.correlationId,
                         event.payload.orderId,
                         JSON.stringify({
