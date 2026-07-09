@@ -688,22 +688,19 @@ app.get('/health', async (_req, res) => {
 
 // ==========================================
 // POST /orders
-// Crear pedido (Integrado G2 + G7)
+// Crear pedido (Optimizado con estado CREATED inicial)
 // ==========================================
 
 app.post("/orders", async (req, res) => {
     const authHeader = req.headers["authorization"];
-    const idempotencyKey =
-        req.headers["idempotency-key"];
-    const correlationId =
-        req.headers["x-correlation-id"] || "local";
+    const idempotencyKey = req.headers["idempotency-key"];
+    const correlationId = req.headers["x-correlation-id"] || "local";
     const now = new Date().toISOString();
 
     //---------------------------------------
     // Validar token G2
     //---------------------------------------
-    const userProfile =
-        await validateTokenWithG2(authHeader);
+    const userProfile = await validateTokenWithG2(authHeader);
     if (!userProfile) {
         return res.status(401).json({
             timestamp: now,
@@ -713,8 +710,7 @@ app.post("/orders", async (req, res) => {
             correlationId
         });
     }
-    const userId =
-        userProfile.business_user_id;
+    const userId = userProfile.business_user_id;
     if (!userId) {
         return res.status(422).json({
             timestamp: now,
@@ -724,7 +720,6 @@ app.post("/orders", async (req, res) => {
             correlationId
         });
     }
-
 
     //---------------------------------------
     // Validar body
@@ -767,16 +762,10 @@ app.post("/orders", async (req, res) => {
     //---------------------------------------
     const orderItems = [];
     for (const item of items) {
-        const productId =
-            String(item.productId).trim();
-        const quantity =
-            Number(item.quantity);
-        const unitPrice =
-            Number(item.unitPrice);
-        if (
-            !productId ||
-            quantity <= 0
-        ) {
+        const productId = String(item.productId).trim();
+        const quantity = Number(item.quantity);
+        const unitPrice = Number(item.unitPrice);
+        if (!productId || quantity <= 0) {
             return res.status(400).json({
                 timestamp: now,
                 status: 400,
@@ -789,299 +778,200 @@ app.post("/orders", async (req, res) => {
             productId,
             quantity,
             unitPrice,
-            subtotal:
-                quantity * unitPrice
+            subtotal: quantity * unitPrice
         });
     }
 
-    //---------------------------------------
-    // Total
-    //---------------------------------------
-    const totalAmount =
-        orderItems.reduce(
-            (sum, item) =>
-                sum + item.subtotal,
-            0
-        );
+    const totalAmount = orderItems.reduce((sum, item) => sum + item.subtotal, 0);
+    const orderNumber = `ORD-${Date.now()}`;
 
-    //---------------------------------------
-    // Número de orden
-    //---------------------------------------
-    const orderNumber =
-        `ORD-${Date.now()}`;
+    // ==================================================
+    // FASE 1: CREAR LA ORDEN EN LA BD EN ESTADO 'CREATED'
+    // ==================================================
+    const client = await pool.connect();
+    let orderUuid;
 
-    //---------------------------------------
-    // Reservar stock en G7
-    //---------------------------------------
-    let reservation;
-    try {
-        reservation =
-            await reserveStockWithG7(
-                orderNumber,
-                orderItems,
-                idempotencyKey
-            );
-        console.log(
-            "Reserva creada:",
-            reservation
-        );
-    }
-    catch (err) {
-        return res.status(
-            err.status || 500
-        ).json({
-            timestamp: now,
-            status:
-                err.status || 500,
-            code:
-                "STOCK_RESERVATION_FAILED",
-            message:
-                "No fue posible reservar stock.",
-            details:
-                err.data,
-            correlationId
-        });
-    }
-    const client =
-        await pool.connect();
-        
     try {
         await client.query("BEGIN");
 
-        //--------------------------------------------------
-        // Crear orden
-        //--------------------------------------------------
-        let orderUuid;
-        try {
-            const orderResult = await client.query(
-                `INSERT INTO orders
-                (
-                    order_number,
-                    user_id,
-                    total_amount,
-                    status,
-                    idempotency_key,
-                    created_at,
-                    updated_at
-                )
-                VALUES
-                (
-                    $1,
-                    $2,
-                    $3,
-                    'CREATED',
-                    $4,
-                    $5,
-                    $5
-                )
-                RETURNING id`,
-                [
-                    orderNumber,
-                    userId,
-                    totalAmount,
-                    idempotencyKey,
-                    now
-                ]
-            );
-            orderUuid = orderResult.rows[0].id;
-        }
-        catch (dbErr) {
-            //-----------------------------------------
-            // Si falla la BD
-            // liberar reserva en G7
-            //-----------------------------------------
-            await releaseReservationWithG7(orderNumber);
-            if (dbErr.code === "23505") {
-                await client.query("ROLLBACK");
-                return res.status(409).json({
-                    timestamp: now,
-                    status: 409,
-                    code: "IDEMPOTENCY_CONFLICT",
-                    message:
-                        "La orden ya existe.",
-                    correlationId
-                });
-            }
-            throw dbErr;
-        }
-        //--------------------------------------------------
-        // Historial
-        //--------------------------------------------------
-        await client.query(
-            `INSERT INTO order_status_history
-            (
-                order_id,
-                previous_status,
-                new_status,
-                reason,
-                changed_at
-            )
-            VALUES
-            (
-                $1,
-                NULL,
-                'Created',
-                'Pedido inicializado en el sistema.',
-                $2
-            )`,
-            [
-                orderUuid,
-                now
-            ]
+        const orderResult = await client.query(
+            `INSERT INTO orders
+            (order_number, user_id, total_amount, status, idempotency_key, created_at, updated_at)
+            VALUES ($1, $2, $3, 'CREATED', $4, $5, $5)
+            RETURNING id`,
+            [orderNumber, userId, totalAmount, idempotencyKey, now]
         );
+        orderUuid = orderResult.rows[0].id;
+
+        // Historial inicial
         await client.query(
-            `
-            UPDATE orders 
-            SET status = 'STOCK_RESERVED', 
-                updated_at = $1 
-            WHERE id = $2
-            `,
-            [
-                now, orderUuid
-            ]
+            `INSERT INTO order_status_history (order_id, previous_status, new_status, reason, changed_at)
+            VALUES ($1, NULL, 'CREATED', 'Pedido inicializado en el sistema.', $2)`,
+            [orderUuid, now]
         );
-        await client.query(
-            `
-            INSERT INTO order_status_history
-            (
-                order_id,
-                previous_status,
-                new_status,
-                reason,
-                changed_at
-            )
-            VALUES
-            (
-                $1,
-                'CREATED', 
-                'STOCK_RESERVED',
-                'Stock reservado correctamente en G7.',
-                $2
-            )
-            `,
-            [
-                orderUuid, now
-            ]
-        );
-        //--------------------------------------------------
-        // Items
-        //--------------------------------------------------
+
+        // Insertar items de la orden
         for (const item of orderItems) {
             await client.query(
-                `INSERT INTO order_items
-                (
-                    order_id,
-                    product_id,
-                    quantity,
-                    unit_price,
-                    subtotal,
-                    created_at
-                )
-                VALUES
-                (
-                    $1,
-                    $2,
-                    $3,
-                    $4,
-                    $5,
-                    $6
-                )`,
-                [
-                    orderUuid,
-                    item.productId,
-                    item.quantity,
-                    item.unitPrice,
-                    item.subtotal,
-                    now
-                ]
+                `INSERT INTO order_items (order_id, product_id, quantity, unit_price, subtotal, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6)`,
+                [orderUuid, item.productId, item.quantity, item.unitPrice, item.subtotal, now]
             );
         }
 
-        //--------------------------------------------------
-        // Outbox
-        //--------------------------------------------------
-        await client.query(
-            `INSERT INTO outbox_events
-            (
-                event_type,
-                correlation_id,
-                aggregate_id,
-                payload,
-                occurred_at,
-                created_at
-            )
-            VALUES
-            (
-                $1,
-                $2,
-                $3,
-                $4,
-                $5,
-                $5
-            )`,
-            [
-                "OrderCreated",
-                correlationId,
-                orderUuid,
-                JSON.stringify({
-                    orderId: orderUuid,
-                    orderNumber,
-                    reservationId:
-                        reservation.reservationId,
-                    userId,
-                    totalAmount,
-                    items: orderItems
-                }),
-                now
-            ]
-        );
-
-        //--------------------------------------------------
-        // Commit
-        //--------------------------------------------------
         await client.query("COMMIT");
-
-        //--------------------------------------------------
-        // Respuesta
-        //--------------------------------------------------
-        return res.status(201).json({
-            id: orderUuid,
-            orderNumber,
-            reservationId:
-                reservation.reservationId,
-            userId,
-            status: "STOCK_RESERVED",
-            totalAmount,
-            items: orderItems,
-            createdAt: now,
-            updatedAt: now
-        });
+        console.log(`Orden registrada con éxito en estado CREATED: ${orderUuid}`);
     }
-    catch (error) {
-
-        //-----------------------------------------
-        // Si falla cualquier INSERT
-        // liberar reserva
-        //-----------------------------------------
-        try {
-            await client.query("ROLLBACK");
-        } catch (_) {}
-        await releaseReservationWithG7(
-            orderNumber
-        );
-        console.error(error);
+    catch (dbErr) {
+        await client.query("ROLLBACK");
+        if (dbErr.code === "23505") {
+            return res.status(409).json({
+                timestamp: now,
+                status: 409,
+                code: "IDEMPOTENCY_CONFLICT",
+                message: "La orden ya existe.",
+                correlationId
+            });
+        }
+        console.error("Error guardando orden inicial:", dbErr);
         return res.status(500).json({
             timestamp: now,
             status: 500,
-            code: "ORDER_TRANSACTION_FAILED",
-            message:
-                "No fue posible crear el pedido.",
-            error:
-                error.message,
+            code: "ORDER_CREATION_FAILED",
+            message: "No se pudo registrar la orden inicial.",
             correlationId
         });
     }
-    finally {
+
+    // ==================================================
+    // FASE 2: ENVIAR RESERVA DE STOCK AL GRUPO 7
+    // ==================================================
+    let reservation;
+    try {
+        reservation = await reserveStockWithG7(orderNumber, orderItems, idempotencyKey);
+        console.log("Reserva exitosa en G7:", reservation);
+
+        // ==================================================
+        // FASE 3A: SI OK -> PASAR A 'STOCK_RESERVED'
+        // ==================================================
+        try {
+            await client.query("BEGIN");
+
+            await client.query(
+                `UPDATE orders SET status = 'STOCK_RESERVED', updated_at = $1 WHERE id = $2`,
+                [now, orderUuid]
+            );
+
+            await client.query(
+                `INSERT INTO order_status_history (order_id, previous_status, new_status, reason, changed_at)
+                VALUES ($1, 'CREATED', 'STOCK_RESERVED', 'Stock reservado correctamente en G7.', $2)`,
+                [orderUuid, now]
+            );
+
+            // Guardar evento exitoso en Outbox
+            await client.query(
+                `INSERT INTO outbox_events (event_type, correlation_id, aggregate_id, payload, occurred_at, created_at)
+                VALUES ($1, $2, $3, $4, $5, $5)`,
+                [
+                    "OrderCreated",
+                    correlationId,
+                    orderUuid,
+                    JSON.stringify({
+                        orderId: orderUuid,
+                        orderNumber,
+                        reservationId: reservation.reservationId,
+                        userId,
+                        totalAmount,
+                        items: orderItems
+                    }),
+                    now
+                ]
+            );
+
+            await client.query("COMMIT");
+
+            return res.status(201).json({
+                id: orderUuid,
+                orderNumber,
+                reservationId: reservation.reservationId,
+                userId,
+                status: "STOCK_RESERVED",
+                totalAmount,
+                items: orderItems,
+                createdAt: now,
+                updatedAt: now
+            });
+        } catch (innerErr) {
+            await client.query("ROLLBACK");
+            throw innerErr;
+        }
+
+    } catch (err) {
+        // ==================================================
+        // FASE 3B: SI FALLA STOCK (422) -> PASAR A 'REJECTED'
+        // ==================================================
+        console.log("Reserva falló en G7, procediendo a rechazar la orden.");
+        
+        try {
+            await client.query("BEGIN");
+
+            // Pasamos la orden a REJECTED en Supabase
+            await client.query(
+                `UPDATE orders SET status = 'REJECTED', updated_at = $1 WHERE id = $2`,
+                [now, orderUuid]
+            );
+
+            await client.query(
+                `INSERT INTO order_status_history (order_id, previous_status, new_status, reason, changed_at)
+                VALUES ($1, 'CREATED', 'REJECTED', 'Reserva de stock rechazada por Grupo 7.', $2)`,
+                [orderUuid, now]
+            );
+
+            // ENVIAR EVENTO StockRejected AL OUTBOX CON EL USERID QUE G9 NECESITA
+            await client.query(
+                `INSERT INTO outbox_events (event_type, correlation_id, aggregate_id, payload, occurred_at, created_at)
+                VALUES ($1, $2, $3, $4, $5, $5)`,
+                [
+                    "StockRejected",
+                    correlationId,
+                    orderUuid,
+                    JSON.stringify({
+                        orderId: orderUuid,
+                        orderNumber,
+                        userId,
+                        reason: err.data?.message || "No fue posible reservar stock por falta de unidades."
+                    }),
+                    now
+                ]
+            );
+
+            await client.query("COMMIT");
+
+            // Respondemos con el error de stock pero informando que la orden fue registrada como REJECTED
+            return res.status(err.status || 422).json({
+                timestamp: now,
+                status: err.status || 422,
+                code: "STOCK_RESERVATION_FAILED",
+                message: "No fue posible reservar stock. Orden rechazada.",
+                orderId: orderUuid,
+                userId,
+                details: err.data,
+                correlationId
+            });
+
+        } catch (innerErr) {
+            await client.query("ROLLBACK");
+            console.error("Critical error handling stock rejection rollback:", innerErr);
+            return res.status(500).json({
+                timestamp: now,
+                status: 500,
+                code: "ORDER_TRANSACTION_FAILED",
+                message: "Error crítico procesando el fallo de stock.",
+                error: innerErr.message,
+                correlationId
+            });
+        }
+    } finally {
         client.release();
     }
 });
