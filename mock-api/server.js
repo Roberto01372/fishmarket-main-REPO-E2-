@@ -1179,6 +1179,7 @@ app.patch('/orders/:id', async (req, res) => {
     // --- Logica dinamica para evento ---
     let eventType = 'OrderStatusChanged'; // Evento genérico por defecto
     
+
     if (newStatus === 'READY_TO_SHIP') {
       eventType = 'ReadyToShip'; 
     } else if (newStatus === 'PAID') {
@@ -1187,6 +1188,8 @@ app.patch('/orders/:id', async (req, res) => {
       eventType = 'OrderFailed';
     } else if (newStatus === 'CANCELLED') {
       eventType = 'OrderCancelled';
+    } else if (newStatus === 'SHIPPED') {
+        eventType = 'Shipped';
     }
 
     // Insertar en la tabla outbox_events usando la nueva variable eventType
