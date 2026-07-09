@@ -114,7 +114,7 @@ const uuidRegex =
 let rabbitConnection = null;
 let rabbitChannel = null;
 
-const EXCHANGE_NAME = "payments.events";
+const EXCHANGE_NAME = "fishmarket";
 
 // Cola exclusiva del Grupo 5
 const QUEUE_NAME = "g5-order-service";
