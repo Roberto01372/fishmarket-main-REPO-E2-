@@ -32,7 +32,7 @@ app.use(express.json());
 
 const RABBITMQ_URL = // Publicación y consumo de eventos
     process.env.RABBITMQ_URL || 
-    "amqp://admin_g5:123123@rabbitmq-testeo:5672";
+    "amqp://admin_g5:123123@rabbitmq-testeo.onrender.com:5672";
 
 const G2_BASE_URL =
     process.env.G2_BASE_URL ||
