@@ -468,15 +468,6 @@ async function processMessage(msg) {
                 break;
             case "ShipmentCreated":
                 console.log("Despacho creado");
-                
-                const incomingOrderId = event.payload.orderId;
-                if (!uuidRegex.test(incomingOrderId)) {
-                    console.warn(`[G5] Mensaje descartado. El orderId recibido ("${incomingOrderId}") NO es un UUID válido. Dando ACK.`);
-                    await client.query("ROLLBACK");
-                    rabbitChannel.ack(msg);
-                    return;
-                }
-
                 await client.query(
                     `
                     UPDATE orders
@@ -484,9 +475,7 @@ async function processMessage(msg) {
                         updated_at=NOW()
                     WHERE id = $1
                     `,
-                    [
-                        incomingOrderId
-                    ]
+                    [event.payload.orderId]
                 );
                 const { rows } = await client.query(
                     `
@@ -495,14 +484,9 @@ async function processMessage(msg) {
                         WHERE id = $1
                     `,
                     [
-                        incomingOrderId
+                        event.payload.orderId
                     ]
                 );
-                if (rows.length === 0) {
-                    console.warn(`[G5] Orden ${incomingOrderId} no encontrada en la BD de Supabase.`);
-                    await client.query("ROLLBACK");
-                    return;
-                }
                 const order = rows[0];
                 await client.query(
                     `
@@ -523,9 +507,7 @@ async function processMessage(msg) {
                         NOW()
                     )
                     `,
-                    [
-                        incomingOrderId
-                    ]
+                    [event.payload.orderId]
                 );
                 await client.query(
                     `
@@ -551,9 +533,9 @@ async function processMessage(msg) {
                     [
                         "Shipped.created",
                         event.correlationId,
-                        incomingOrderId,
+                        event.payload.orderId,
                         JSON.stringify({
-                            orderId: incomingOrderId,
+                            orderId: event.payload.orderId,
                             orderNumber: order.order_number,
                             userId: order.user_id,
                             previousStatus: "READY_TO_SHIP",
