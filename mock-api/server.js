@@ -477,6 +477,17 @@ async function processMessage(msg) {
                     `,
                     [event.payload.orderId]
                 );
+                const { rows } = await client.query(
+                    `
+                        SELECT order_number, user_id
+                        FROM orders
+                        WHERE id = $1
+                    `,
+                    [
+                        event.payload.orderId
+                    ]
+                );
+                const order = rows[0];
                 await client.query(
                     `
                     INSERT INTO order_status_history
@@ -524,7 +535,12 @@ async function processMessage(msg) {
                         event.correlationId,
                         event.payload.orderId,
                         JSON.stringify({
-                            orderId: event.payload.orderId
+                            orderId: event.payload.orderId,
+                            orderNumber: order.order_number,
+                            userId: order.user_id,
+                            previousStatus: "READY_TO_SHIP",
+                            newStatus: "SHIPPED",
+                            reason: "ShipmentCreated event received"
                         })
                     ]
                 );
