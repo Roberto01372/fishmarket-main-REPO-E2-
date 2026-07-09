@@ -617,6 +617,40 @@ async function processMessage(msg) {
                         event.payload.orderId
                     ]
                 );
+                const failedOrder = await client.query(
+                    `
+                    INSERT INTO outbox_events 
+                    (
+                        event_type, 
+                        correlation_id, 
+                        aggregate_id, 
+                        payload, 
+                        occurred_at, 
+                        created_at
+                    )
+                    VALUES
+                    (
+                        $1,
+                        $2,
+                        $3, 
+                        $4,
+                        NOW(),
+                        NOW())
+                        `,
+                    [
+                        'ShipFailed',
+                        event.correlationId,
+                        event.payload.orderId,
+                        JSON.stringify({
+                            orderId: event.payload.orderId,
+                            orderNumber: failedOrderData?.order_number,
+                            userId: failedOrderData?.user_id,
+                            previousStatus: 'SHIPPED',
+                            newStatus: 'FAILED',
+                            reason: event.payload.reason || 'Despacho fallido por Grupo 8'
+                    })
+                    ]
+                );
                 break;
             case "InventoryReleased":
                 console.log("Inventario liberado");
