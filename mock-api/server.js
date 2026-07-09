@@ -394,36 +394,6 @@ async function processMessage(msg) {
         switch (routingKey) {
             case "payment.approved":
                 console.log("Pago aprobado");
-                if (!uuidRegex.test(event.payload.orderId)) {
-                    console.warn(`[G5] Mensaje de Pago Aprobado descartado. El orderId recibido ("${event.payload.orderId}") NO es un UUID válido. Dando ACK.`);
-                    await client.query(
-                        `
-                        INSERT INTO consumed_events 
-                        (
-                            event_id, 
-                            event_type, 
-                            producer, 
-                            order_id
-                        )
-                        VALUES 
-                        (
-                            $1, 
-                            $2, 
-                            $3, 
-                            $4
-                        )
-                        `,
-                        [
-                            eventId, 
-                            eventType, 
-                            producer, 
-                            null
-                        ]
-                    );
-                    await client.query("COMMIT");
-                    rabbitChannel.ack(msg);
-                    return;
-                }
                 await client.query(
                     `
                     UPDATE orders
@@ -461,36 +431,6 @@ async function processMessage(msg) {
                 break;
             case "payment.rejected":
                 console.log("Pago rechazado");
-                if (!uuidRegex.test(event.payload.orderId)) {
-                    console.warn(`[G5] Mensaje de Pago Rechazado descartado. El orderId recibido ("${event.payload.orderId}") NO es un UUID válido. Dando ACK.`);
-                    await client.query(
-                        `
-                        INSERT INTO consumed_events 
-                        (
-                            event_id, 
-                            event_type, 
-                            producer, 
-                            order_id
-                        )
-                        VALUES 
-                        (
-                            $1, 
-                            $2, 
-                            $3, 
-                            $4
-                        )
-                        `,
-                        [
-                            eventId, 
-                            eventType, 
-                            producer, 
-                            null
-                        ]
-                    );
-                    await client.query("COMMIT");
-                    rabbitChannel.ack(msg);
-                    return;
-                }
                 await client.query(
                     `
                     UPDATE orders
