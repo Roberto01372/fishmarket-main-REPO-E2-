@@ -932,7 +932,7 @@ app.post("/orders", async (req, res) => {
                 `INSERT INTO outbox_events (event_type, correlation_id, aggregate_id, payload, occurred_at, created_at)
                 VALUES ($1, $2, $3, $4, $5, $5)`,
                 [
-                    "StockRejected",
+                    "OrderRejected",
                     correlationId,
                     orderUuid,
                     JSON.stringify({
