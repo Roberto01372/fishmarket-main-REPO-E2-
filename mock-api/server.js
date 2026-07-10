@@ -657,35 +657,31 @@ async function processMessage(msg) {
                 break;
             default:
                 console.log("Evento ignorado:",routingKey);
+                await client.query(
+                    `
+                    INSERT INTO consumed_events
+                    (
+                        event_id,
+                        event_type,
+                        producer,
+                        order_id
+                    )
+                    VALUES
+                    (
+                        $1,
+                        $2,
+                        $3,
+                        $4
+                    )
+                    `,
+                    [
+                        eventId,
+                        eventType,
+                        producer,
+                        event.payload.orderId || null
+                    ]
+                );
         }
-
-        //---------------------------------------------------
-        // Registrar evento consumido
-        //---------------------------------------------------
-        await client.query(
-            `
-            INSERT INTO consumed_events
-            (
-                event_id,
-                event_type,
-                producer,
-                order_id
-            )
-            VALUES
-            (
-                $1,
-                $2,
-                $3,
-                $4
-            )
-            `,
-            [
-                eventId,
-                eventType,
-                producer,
-                event.payload.orderId || null
-            ]
-        );
         await client.query("COMMIT");
         rabbitChannel.ack(msg);
     }
