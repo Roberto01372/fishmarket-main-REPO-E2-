@@ -349,352 +349,322 @@ async function startConsumer() {
     console.log("Consumer iniciado.");
 }
 
+// Errores que NO se reintentan: reencolar no los va a arreglar nunca.
+class NonRetryableError extends Error {
+    constructor(message, context) {
+        super(message);
+        this.name = "NonRetryableError";
+        this.context = context;
+    }
+}
+
+// Códigos de Postgres que son culpa del payload, no del sistema.
+const PERMANENT_PG_CODES = new Set([
+    "22P02", // invalid_text_representation → uuid mal formado
+    "22001", // string_data_right_truncation
+    "22003", // numeric_value_out_of_range
+    "23503", // foreign_key_violation
+    "23502", // not_null_violation
+]);
+
 // ==========================================
 // RabbitMQ
 // Procesamiento de mensajes
 // ==========================================
 
 async function processMessage(msg) {
-    if (!msg)
-        return;
-    const event = JSON.parse(
-        msg.content.toString()
-    );
+    if (!msg) return;
+
     const routingKey = msg.fields.routingKey;
+
+    // ── Parseo defensivo: si ni siquiera es JSON, no hay nada que salvar ──
+    let event;
+    try {
+        event = JSON.parse(msg.content.toString());
+    } catch (err) {
+        console.error("[processMessage] JSON inválido, descartado:", {
+            routingKey,
+            raw: msg.content.toString().slice(0, 500),
+        });
+        rabbitChannel.nack(msg, false, false);
+        return;
+    }
+
     const eventId = event.eventId;
     const eventType = event.eventType;
     const producer = event.producer;
+    const orderId = event.payload?.orderId;
+
+    // Casos que hacen WHERE id = $1 contra una columna uuid
+    const NEEDS_ORDER_ID = [
+        "payment.approved",
+        "payment.rejected",
+        "ShipmentCreated",
+        "ShipmentDelivered",
+        "ShipmentFailed",
+    ];
 
     const client = await pool.connect();
 
     try {
+        // ── Validación DENTRO del try: así los inválidos caen en el catch y van a la DLQ ──
+        if (NEEDS_ORDER_ID.includes(routingKey)) {
+            if (typeof orderId !== "string" || !uuidRegex.test(orderId)) {
+                throw new NonRetryableError("orderId no es un UUID válido", {
+                    orderId,
+                    appId: msg.properties?.appId,
+                });
+            }
+        }
+
         await client.query("BEGIN");
-        //---------------------------------------------------
-        // Verificar si ya fue procesado
-        //---------------------------------------------------
+
+        // ── Idempotencia ──
         const exists = await client.query(
-            `
-            SELECT 1
-            FROM consumed_events
-            WHERE event_id = $1
-            `,
-            [
-                eventId
-            ]
+            `SELECT 1 FROM consumed_events WHERE event_id = $1`,
+            [eventId]
         );
         if (exists.rows.length > 0) {
             await client.query("ROLLBACK");
+            console.log("[processMessage] evento ya procesado, se ignora:", eventId);
             rabbitChannel.ack(msg);
             return;
         }
-        //---------------------------------------------------
-        // Procesar evento
-        //---------------------------------------------------
+
         switch (routingKey) {
-            case "payment.approved":
+            // ─────────────────────────────────────────────────────
+            case "payment.approved": {
                 console.log("Pago aprobado");
-                await client.query(
-                    `
-                    UPDATE orders
-                    SET status='PAID',
-                        updated_at=NOW()
-                    WHERE id=$1
-                    `,
-                    [
-                        event.payload.orderId
-                    ]
+                const upd = await client.query(
+                    `UPDATE orders
+                        SET status = 'PAID', updated_at = NOW()
+                      WHERE id = $1
+                  RETURNING id`,
+                    [orderId]
                 );
+                if (upd.rowCount === 0) {
+                    throw new NonRetryableError("Orden inexistente", { orderId });
+                }
                 await client.query(
-                    `
-                    INSERT INTO order_status_history
-                    (
-                        order_id,
-                        previous_status,
-                        new_status,
-                        reason,
-                        changed_at
-                    )
-                    VALUES
-                    (
-                        $1,
-                        'PAYMENT_PENDING',
-                        'PAID',
-                        'Pago aprobado por Grupo 6.',
-                        NOW()
-                    )
-                    `,
-                    [
-                    event.payload.orderId
-                    ]
+                    `INSERT INTO order_status_history
+                        (order_id, previous_status, new_status, reason, changed_at)
+                     VALUES ($1, 'PAYMENT_PENDING', 'PAID', 'Pago aprobado por Grupo 6.', NOW())`,
+                    [orderId]
                 );
                 break;
-            case "payment.rejected":
+            }
+
+            // ─────────────────────────────────────────────────────
+            case "payment.rejected": {
                 console.log("Pago rechazado");
-                await client.query(
-                    `
-                    UPDATE orders
-                    SET status='FAILED',
-                        updated_at=NOW()
-                    WHERE id=$1
-                    `,
-                    [
-                        event.payload.orderId
-                    ]
+                const upd = await client.query(
+                    `UPDATE orders
+                        SET status = 'FAILED', updated_at = NOW()
+                      WHERE id = $1
+                  RETURNING id`,
+                    [orderId]
                 );
+                if (upd.rowCount === 0) {
+                    throw new NonRetryableError("Orden inexistente", { orderId });
+                }
                 await client.query(
-                    `
-                    INSERT INTO order_status_history
-                    (
-                        order_id,
-                        previous_status,
-                        new_status,
-                        reason,
-                        changed_at
-                    )
-                    VALUES
-                    (
-                        $1,
-                        'PAYMENT_PENDING',
-                        'FAILED',
-                        'Pago rechazado por Grupo 6.',
-                        NOW()
-                    )
-                    `,
-                    [
-                        event.payload.orderId
-                    ]
+                    `INSERT INTO order_status_history
+                        (order_id, previous_status, new_status, reason, changed_at)
+                     VALUES ($1, 'PAYMENT_PENDING', 'FAILED', 'Pago rechazado por Grupo 6.', NOW())`,
+                    [orderId]
                 );
                 break;
-            case "ShipmentCreated":
+            }
+
+            // ─────────────────────────────────────────────────────
+            case "ShipmentCreated": {
                 console.log("Despacho creado");
-                await client.query(
-                    `
-                    UPDATE orders
-                    SET status='SHIPPED',
-                        updated_at=NOW()
-                    WHERE id = $1
-                    `,
-                    [event.payload.orderId]
+
+                const current = await client.query(
+                    `SELECT id, order_number, user_id, status
+                       FROM orders
+                      WHERE id = $1
+                      FOR UPDATE`,
+                    [orderId]
                 );
-                const { rows } = await client.query(
-                    `
-                        SELECT order_number, user_id
-                        FROM orders
-                        WHERE id = $1
-                    `,
-                    [
-                        event.payload.orderId
-                    ]
-                );
-                const order = rows[0];
+                if (current.rowCount === 0) {
+                    throw new NonRetryableError("Orden inexistente", { orderId });
+                }
+                const order = current.rows[0];
+                const previousStatus = order.status;
+
                 await client.query(
-                    `
-                    INSERT INTO order_status_history
-                    (
-                        order_id,
-                        previous_status,
-                        new_status,
-                        reason,
-                        changed_at
-                    )
-                    VALUES
-                    (
-                        $1,
-                        'READY_TO_SHIP',
-                        'SHIPPED',
-                        'Despacho creado por Grupo 8.',
-                        NOW()
-                    )
-                    `,
-                    [event.payload.orderId]
+                    `UPDATE orders
+                        SET status = 'SHIPPED', updated_at = NOW()
+                      WHERE id = $1`,
+                    [orderId]
                 );
+
                 await client.query(
-                    `
-                    INSERT INTO outbox_events
-                    (
-                        event_type,
-                        correlation_id,
-                        aggregate_id,
-                        payload,
-                        occurred_at,
-                        created_at
-                    )
-                    VALUES
-                    (
-                        $1,
-                        $2,
-                        $3,
-                        $4,
-                        NOW(),
-                        NOW()
-                    )
-                    `,
+                    `INSERT INTO order_status_history
+                        (order_id, previous_status, new_status, reason, changed_at)
+                     VALUES ($1, $2, 'SHIPPED', 'Despacho creado por Grupo 8.', NOW())`,
+                    [orderId, previousStatus]
+                );
+
+                await client.query(
+                    `INSERT INTO outbox_events
+                        (event_type, correlation_id, aggregate_id, payload, occurred_at, created_at)
+                     VALUES ($1, $2, $3, $4, NOW(), NOW())`,
                     [
                         "Shipped.created",
                         event.correlationId,
-                        event.payload.orderId,
+                        orderId,
                         JSON.stringify({
-                            orderId: event.payload.orderId,
+                            orderId: orderId,
                             orderNumber: order.order_number,
                             userId: order.user_id,
-                            previousStatus: "READY_TO_SHIP",
+                            previousStatus: previousStatus,
                             newStatus: "SHIPPED",
-                            reason: "ShipmentCreated event received"
-                        })
+                            reason: "ShipmentCreated event received",
+                        }),
                     ]
                 );
                 break;
-            case "ShipmentDelivered":
+            }
+
+            // ─────────────────────────────────────────────────────
+            case "ShipmentDelivered": {
                 console.log("Pedido entregado");
-                await client.query(
-                    `
-                    UPDATE orders
-                    SET status='DELIVERED',
-                        updated_at=NOW()
-                    WHERE id=$1
-                    `,
-                    [
-                        event.payload.orderId
-                    ]
+                const upd = await client.query(
+                    `UPDATE orders
+                        SET status = 'DELIVERED', updated_at = NOW()
+                      WHERE id = $1
+                  RETURNING id`,
+                    [orderId]
                 );
+                if (upd.rowCount === 0) {
+                    throw new NonRetryableError("Orden inexistente", { orderId });
+                }
                 await client.query(
-                    `
-                    INSERT INTO order_status_history
-                    (
-                        order_id,
-                        previous_status,
-                        new_status,
-                        reason,
-                        changed_at
-                    )
-                    VALUES
-                    (
-                        $1,
-                        'SHIPPED',
-                        'DELIVERED',
-                        'Pedido entregado por Grupo 8.',
-                        NOW()
-                    )
-                    `,
-                    [
-                        event.payload.orderId
-                    ]
+                    `INSERT INTO order_status_history
+                        (order_id, previous_status, new_status, reason, changed_at)
+                     VALUES ($1, 'SHIPPED', 'DELIVERED', 'Pedido entregado por Grupo 8.', NOW())`,
+                    [orderId]
                 );
                 break;
-            case "ShipmentFailed":
+            }
+
+            // ─────────────────────────────────────────────────────
+            case "ShipmentFailed": {
                 console.log("Despacho fallido");
-                await client.query(
-                    `
-                    UPDATE orders
-                    SET status='FAILED',
-                        updated_at=NOW()
-                    WHERE id=$1
-                    `,
-                    [
-                        event.payload.orderId
-                    ]
+
+                const current = await client.query(
+                    `SELECT id, order_number, user_id, status
+                       FROM orders
+                      WHERE id = $1
+                      FOR UPDATE`,
+                    [orderId]
                 );
+                if (current.rowCount === 0) {
+                    throw new NonRetryableError("Orden inexistente", { orderId });
+                }
+                const failedOrderData = current.rows[0];
+                const previousStatus = failedOrderData.status;
+
                 await client.query(
-                    `
-                    INSERT INTO order_status_history
-                    (
-                        order_id,
-                        previous_status,
-                        new_status,
-                        reason,
-                        changed_at
-                    )
-                    VALUES
-                    (
-                        $1,
-                        'SHIPPED',
-                        'FAILED',
-                        'Despacho fallido informado por Grupo 8.',
-                        NOW()
-                    )
-                    `,
-                    [
-                        event.payload.orderId
-                    ]
+                    `UPDATE orders
+                        SET status = 'FAILED', updated_at = NOW()
+                      WHERE id = $1`,
+                    [orderId]
                 );
-                const failedOrder = await client.query(
-                    `
-                    INSERT INTO outbox_events 
-                    (
-                        event_type, 
-                        correlation_id, 
-                        aggregate_id, 
-                        payload, 
-                        occurred_at, 
-                        created_at
-                    )
-                    VALUES
-                    (
-                        $1,
-                        $2,
-                        $3, 
-                        $4,
-                        NOW(),
-                        NOW())
-                        `,
+
+                await client.query(
+                    `INSERT INTO order_status_history
+                        (order_id, previous_status, new_status, reason, changed_at)
+                     VALUES ($1, $2, 'FAILED', 'Despacho fallido informado por Grupo 8.', NOW())`,
+                    [orderId, previousStatus]
+                );
+
+                await client.query(
+                    `INSERT INTO outbox_events
+                        (event_type, correlation_id, aggregate_id, payload, occurred_at, created_at)
+                     VALUES ($1, $2, $3, $4, NOW(), NOW())`,
                     [
-                        'ShipFailed',
+                        "ShipFailed",
                         event.correlationId,
-                        event.payload.orderId,
+                        orderId,
                         JSON.stringify({
-                            orderId: event.payload.orderId,
-                            orderNumber: failedOrderData?.order_number,
-                            userId: failedOrderData?.user_id,
-                            previousStatus: 'SHIPPED',
-                            newStatus: 'FAILED',
-                            reason: event.payload.reason || 'Despacho fallido por Grupo 8'
-                    })
+                            orderId: orderId,
+                            orderNumber: failedOrderData.order_number,
+                            userId: failedOrderData.user_id,
+                            previousStatus: previousStatus,
+                            newStatus: "FAILED",
+                            reason: event.payload.reason || "Despacho fallido por Grupo 8",
+                        }),
                     ]
                 );
                 break;
-            case "InventoryReleased":
+            }
+
+            // ─────────────────────────────────────────────────────
+            case "InventoryReleased": {
                 console.log("Inventario liberado");
                 break;
-            default:
-                console.log("Evento ignorado:",routingKey);
-                await client.query(
-                    `
-                    INSERT INTO consumed_events
-                    (
-                        event_id,
-                        event_type,
-                        producer,
-                        order_id
-                    )
-                    VALUES
-                    (
-                        $1,
-                        $2,
-                        $3,
-                        $4
-                    )
-                    `,
-                    [
-                        eventId,
-                        eventType,
-                        producer,
-                        event.payload.orderId || null
-                    ]
-                );
+            }
+
+            default: {
+                console.log("Evento ignorado:", routingKey);
+                break;
+            }
         }
+
+        // ── Idempotencia: se registra para TODOS los eventos, no solo el default ──
+        await client.query(
+            `INSERT INTO consumed_events (event_id, event_type, producer, order_id)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (event_id) DO NOTHING`,
+            [eventId, eventType, producer, orderId || null]
+        );
+
         await client.query("COMMIT");
         rabbitChannel.ack(msg);
-    }
-    catch (err) {
-        await client.query("ROLLBACK");
-        console.error(err);
-        rabbitChannel.nack(
-            msg,
-            false,
-            true
+    } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+
+        const isPermanent =
+            err instanceof NonRetryableError || PERMANENT_PG_CODES.has(err.code);
+
+        console.error(
+            `[processMessage] ${isPermanent ? "PERMANENTE" : "TRANSITORIO"} —`,
+            routingKey,
+            orderId,
+            err.message,
+            err.context ?? ""
         );
-    }
-    finally {
+
+        if (isPermanent) {
+            // Guardo el muerto antes de descartarlo. Fuera de la tx (ya hizo ROLLBACK).
+            try {
+                await client.query(
+                    `INSERT INTO dead_letter_events
+                        (event_id, event_type, routing_key, producer,
+                         raw_order_id, error_code, error_message, payload)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                    [
+                        eventId ?? null,
+                        eventType ?? null,
+                        routingKey,
+                        producer ?? null,
+                        typeof orderId === "string" ? orderId : null,
+                        err.code ?? err.name,
+                        err.message,
+                        JSON.stringify(event.payload ?? {}),
+                    ]
+                );
+            } catch (dlqErr) {
+                console.error("[processMessage] no se pudo guardar en DLQ:", dlqErr.message);
+            }
+            rabbitChannel.nack(msg, false, false); // descarto: no reencolo
+        } else {
+            rabbitChannel.nack(msg, false, true); // transitorio (red, DB caída) → reintento
+        }
+    } finally {
         client.release();
     }
 }
