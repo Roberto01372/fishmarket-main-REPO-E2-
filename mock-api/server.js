@@ -698,7 +698,7 @@ app.get('/health', async (_req, res) => {
 app.post("/orders", async (req, res) => {
     const authHeader = req.headers["authorization"];
     const idempotencyKey = req.headers["idempotency-key"];
-    const correlationId = req.headers["x-correlation-id"] || "local";
+    const correlationId = req.headers["x-correlation-id"] || crypto.randomUUID();
     const now = new Date().toISOString();
 
     //---------------------------------------
@@ -1070,7 +1070,7 @@ app.patch('/orders/:id', async (req, res) => {
   }
   const orderId = req.params.id;
   const { status, reason } = req.body || {};
-  const correlationId = req.headers['x-correlation-id'] || 'local';
+  const correlationId = req.headers['x-correlation-id'] || crypto.randomUUID();
   const now = new Date().toISOString();
 
   if (!uuidRegex.test(orderId)) {
