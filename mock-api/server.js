@@ -853,7 +853,7 @@ app.post("/orders", async (req, res) => {
     // ==================================================
     let reservation;
     try {
-        reservation = await reserveStockWithG7(orderId, orderNumber, userId, orderItems, idempotencyKey);
+        reservation = await reserveStockWithG7(orderNumber, orderUuid, userId, orderItems, idempotencyKey);
         console.log("Reserva exitosa en G7:", reservation);
 
         // ==================================================
