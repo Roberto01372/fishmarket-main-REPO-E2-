@@ -175,13 +175,19 @@ async function reserveStockWithG7(
         );
         return response.data;
     } catch (error) {
-        if (error.response) {
-            throw {
-                status: error.response.status,
-                data: error.response.data
-            };
-        }
-        throw error;
+    if (error.response) {
+        console.error("❌ G7 error response:", JSON.stringify({
+            status: error.response.status,
+            data: error.response.data,
+            headers: error.response.headers
+        }, null, 2));
+        throw {
+            status: error.response.status,
+            data: error.response.data
+        };
+    }
+    console.error("❌ G7 error sin response:", error.message);
+    throw error;
     }
 }
 
@@ -206,7 +212,7 @@ async function releaseReservationWithG7(orderNumber) {
 // G7
 // Confirmar reserva
 // ==========================================
-async function confirmReservationWithG7(orderId) {
+async function confirmReservationWithG7(orderNumber) {
     try {
         await axios.post(
             `${G7_BASE_URL}/inventory/confirm`,
