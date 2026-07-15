@@ -148,7 +148,10 @@ async function validateTokenWithG2(authHeader) {
 // Reserva de stock
 // ==========================================
 async function reserveStockWithG7(
+    orderId,
     orderNumber,
+    orderItems,
+    userId,
     orderItems,
     idempotencyKey
 ) {
@@ -156,7 +159,9 @@ async function reserveStockWithG7(
         const response = await axios.post(
             `${G7_BASE_URL}/inventory/reserve`,
             {
-                orderId: orderNumber,
+                orderId: orderId,
+                orderNumber: orderNumber,
+                userId: userId,
                 items: orderItems.map(item => ({
                     productId: item.productId,
                     quantity: item.quantity
@@ -847,7 +852,7 @@ app.post("/orders", async (req, res) => {
     // ==================================================
     let reservation;
     try {
-        reservation = await reserveStockWithG7(orderNumber, orderItems, idempotencyKey);
+        reservation = await reserveStockWithG7(orderId, orderNumber, userId, orderItems, idempotencyKey);
         console.log("Reserva exitosa en G7:", reservation);
 
         // ==================================================
