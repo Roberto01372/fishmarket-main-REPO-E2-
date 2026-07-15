@@ -189,12 +189,12 @@ async function reserveStockWithG7(
 // G7
 // Liberar reserva
 // ==========================================
-async function releaseReservationWithG7(orderNumber) {
+async function releaseReservationWithG7(orderId) {
     try {
         await axios.post(
             `${G7_BASE_URL}/inventory/release`,
             {
-                orderNumber: orderNumber
+                orderId: orderId
             }
         );
     } catch (error) {
@@ -206,12 +206,12 @@ async function releaseReservationWithG7(orderNumber) {
 // G7
 // Confirmar reserva
 // ==========================================
-async function confirmReservationWithG7(orderNumber) {
+async function confirmReservationWithG7(orderId) {
     try {
         await axios.post(
             `${G7_BASE_URL}/inventory/confirm`,
             {
-                orderNumber: orderNumber
+                orderId: orderId
             }
         );
     } catch (error) {
