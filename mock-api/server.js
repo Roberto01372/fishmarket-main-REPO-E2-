@@ -194,7 +194,7 @@ async function releaseReservationWithG7(orderNumber) {
         await axios.post(
             `${G7_BASE_URL}/inventory/release`,
             {
-                orderId: orderId
+                orderNumber: orderNumber
             }
         );
     } catch (error) {
@@ -211,7 +211,7 @@ async function confirmReservationWithG7(orderNumber) {
         await axios.post(
             `${G7_BASE_URL}/inventory/confirm`,
             {
-                orderId: orderId
+                orderNumber: orderNumber
             }
         );
     } catch (error) {
