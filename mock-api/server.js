@@ -148,19 +148,19 @@ async function validateTokenWithG2(authHeader) {
 // Reserva de stock
 // ==========================================
 async function reserveStockWithG7(
-    orderId,
-    orderNumber,
-    userId,
-    orderItems,
+    orderNumber, 
+    orderUuid, 
+    userId, 
+    orderItems, 
     idempotencyKey
 ) {
     try {
         const response = await axios.post(
             `${G7_BASE_URL}/inventory/reserve`,
             {
-                orderId: orderNumber,   // ← G7 espera acá el string "ORD-xxxx" (todavía)
-                orderUuid: orderId,     // ← el UUID va en el nuevo campo que pidieron
-                userId: userId,
+                orderId: orderNumber,       // lo que G7 usa hoy
+                orderUuid: orderUuid,       // su PK que piden
+                userId: userId,             // que hoy les llega null
                 items: orderItems.map(item => ({
                     productId: item.productId,
                     quantity: item.quantity
@@ -178,13 +178,9 @@ async function reserveStockWithG7(
     if (error.response) {
         console.error("❌ G7 error response:", JSON.stringify({
             status: error.response.status,
-            data: error.response.data,
-            headers: error.response.headers
-        }, null, 2));
-        throw {
-            status: error.response.status,
             data: error.response.data
-        };
+        }, null, 2));
+        throw { status: error.response.status, data: error.response.data };
     }
     console.error("❌ G7 error sin response:", error.message);
     throw error;
