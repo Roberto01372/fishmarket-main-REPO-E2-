@@ -53,6 +53,7 @@
             display: flex;
             gap: 5px;
             margin-bottom: 15px;
+            flex-wrap: wrap;
         }
         .tab-btn {
             padding: 10px 20px;
@@ -129,6 +130,20 @@
         button.pay-btn:hover {
             background: #059669;
         }
+        button.ship-btn {
+            background: #7c3aed;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            width: 100%;
+            margin-top: 10px;
+        }
+        button.ship-btn:hover {
+            background: #6d28d9;
+        }
         .response-panel {
             margin-top: 20px;
             background: #1e293b;
@@ -179,6 +194,7 @@
         <button class="tab-btn" onclick="switchTab('get-order-id')"><span class="badge get">GET</span> /orders/:id</button>
         <button class="tab-btn" onclick="switchTab('list-orders')"><span class="badge get">GET</span> /orders (Filtros)</button>
         <button class="tab-btn" onclick="switchTab('patch-order')"><span class="badge patch">PATCH</span> /orders/:id (Simular G6)</button>
+        <button class="tab-btn" onclick="switchTab('ship-order')"><span class="badge patch">PATCH</span> /orders/:id (PAID → READY_TO_SHIP)</button>
     </div>
 
     <div id="create-order" class="tab-content active">
@@ -261,6 +277,21 @@
         <button class="pay-btn" onclick="simulatePayment()">Gatillar Transición a PAYMENT_PENDING</button>
     </div>
 
+    <div id="ship-order" class="tab-content">
+        <h3>🚚 Marcar Pedido Listo para Envío</h3>
+        <div class="config-panel" style="background: #f5f3ff; border: 1px solid #ddd6fe; color: #6d28d9; font-size: 0.85rem; margin-bottom: 20px; display: block;">
+            <strong>Flujo requerido:</strong> PAID ➔ (Presionar botón abajo) ➔ READY_TO_SHIP
+        </div>
+
+        <div class="form-group">
+            <label style="color: #6d28d9;">ID del Pedido en estado PAID (UUID)</label>
+            <input type="text" id="shipOrderId" placeholder="Ej: 342a5fa7-b215-4b12-a75c-8c6c15b754e8" style="border-color: #c4b5fd;">
+            <small>Puedes pegar el ID de un pedido ya pagado o usar el autocompletado si acabas de simular el flujo completo.</small>
+        </div>
+
+        <button class="ship-btn" onclick="markReadyToShip()">Gatillar Transición a READY_TO_SHIP</button>
+    </div>
+
     <h3>Consola de Respuesta de la API:</h3>
     <div class="response-panel">
         <pre id="jsonResponse">// Las respuestas del servidor se renderizarán aquí en tiempo real...</pre>
@@ -333,6 +364,7 @@
             if(data.id) {
                 document.getElementById('getOrderId').value = data.id;
                 document.getElementById('patchOrderId').value = data.id;
+                document.getElementById('shipOrderId').value = data.id;
                 if(data.userId) document.getElementById('filterUserId').value = data.userId;
             }
         } catch (error) {
@@ -393,6 +425,32 @@
 
         try {
             document.getElementById('jsonResponse').textContent = "Enviando evento de pago pendiente...";
+            const response = await fetch(`${baseUrl}/orders/${orderId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            const data = await response.json();
+            displayResponse(data);
+        } catch (error) {
+            displayResponse({ error: "Fallo de conexión", message: error.message });
+        }
+    }
+
+    // 5. PATCH /orders/:id (PAID -> READY_TO_SHIP)
+    async function markReadyToShip() {
+        const baseUrl = document.getElementById('baseUrl').value.trim();
+        const orderId = document.getElementById('shipOrderId').value.trim();
+
+        if (!orderId) return alert('Ingresa el ID del pedido que deseas marcar como listo para envío.');
+
+        const body = {
+            status: "READY_TO_SHIP",
+            reason: "El pedido fue preparado y está listo para ser despachado."
+        };
+
+        try {
+            document.getElementById('jsonResponse').textContent = "Enviando transición a READY_TO_SHIP...";
             const response = await fetch(`${baseUrl}/orders/${orderId}`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
