@@ -158,8 +158,8 @@ async function reserveStockWithG7(
         const response = await axios.post(
             `${G7_BASE_URL}/inventory/reserve`,
             {
-                orderId: orderId,
-                orderNumber: orderNumber,
+                orderId: orderNumber,   // ← G7 espera acá el string "ORD-xxxx" (todavía)
+                orderUuid: orderId,     // ← el UUID va en el nuevo campo que pidieron
                 userId: userId,
                 items: orderItems.map(item => ({
                     productId: item.productId,
@@ -189,12 +189,12 @@ async function reserveStockWithG7(
 // G7
 // Liberar reserva
 // ==========================================
-async function releaseReservationWithG7(orderId) {
+async function releaseReservationWithG7(orderNumber) {
     try {
         await axios.post(
             `${G7_BASE_URL}/inventory/release`,
             {
-                orderId: orderId
+                orderId: orderNumber
             }
         );
     } catch (error) {
@@ -211,7 +211,7 @@ async function confirmReservationWithG7(orderId) {
         await axios.post(
             `${G7_BASE_URL}/inventory/confirm`,
             {
-                orderId: orderId
+                orderId: orderNumber
             }
         );
     } catch (error) {
