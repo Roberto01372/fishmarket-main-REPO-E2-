@@ -150,7 +150,6 @@ async function validateTokenWithG2(authHeader) {
 async function reserveStockWithG7(
     orderId,
     orderNumber,
-    orderItems,
     userId,
     orderItems,
     idempotencyKey
